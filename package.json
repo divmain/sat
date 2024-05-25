@@ -2,13 +2,16 @@
   "name": "@divmain/sat",
   "version": "0.1.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
+    "check": "biome check ./src",
+    "fix": "biome check --apply ./src",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Dale Bustad <github@dale.link>",
   "license": "MIT",
   "devDependencies": {
+    "@biomejs/biome": "^1.7.3",
     "typescript": "^5.4.5"
   }
 }
