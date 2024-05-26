@@ -4,6 +4,7 @@
   "description": "",
   "main": "dist/index.js",
   "scripts": {
+    "build": "tsc",
     "check": "biome check ./src",
     "fix": "biome check --apply ./src",
     "test": "echo \"Error: no test specified\" && exit 1"

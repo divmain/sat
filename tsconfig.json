@@ -1,0 +1,17 @@
+{
+  "exclude": ["node_modules"],
+  "compilerOptions": {
+    "lib": ["es2022"],
+    "target": "es2022",
+    "declaration": true,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "strictNullChecks": true,
+    "exactOptionalPropertyTypes": true,
+    "inlineSourceMap": true
+  },
+  "include": ["src"]
+}
