@@ -13,11 +13,20 @@ interface NotExpr {
 }
 type BooleanExpr = AndExpr | OrExpr | NotExpr;
 
+// All variables or subexpressions must be true.
 export const and = (...exprs: Array<Variable | BooleanExpr>): BooleanExpr => ({ and: exprs });
+
+// At least one variable or subexpression must be true.
 export const or = (...exprs: Array<Variable | BooleanExpr>): BooleanExpr => ({ or: exprs });
+
+// The specified variable or subexpression cannot be true.
 export const not = (expr: Variable | BooleanExpr): BooleanExpr => ({ not: expr });
+
+// If `a` is true then `b` must also be true. If `a` is false, `b` can be anything.
 export const implies = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr =>
   or(not(a), b);
+
+// Either `a` or `b` must be true, but not both.
 export const xor = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr =>
   or(and(a, not(b)), and(not(a), b));
 
@@ -78,17 +87,23 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableAssig
   // The number of unique assignment configurations is equal to 2 ** numVars.
   return (
     sequence(2 ** numVars)
-      // Transform each big number into its stringified binary representation, e.g. '101'
+      // Transform each number into its stringified binary representation, e.g. '101'
       .map((num: number) => (num >>> 0).toString(2).padStart(numVars, '0'))
       // Transform each stringified binary into boolean[], e.g. [true, false, true]
       .map((binaryStr: string) => binaryStr.split('').map((zeroOrOne) => zeroOrOne !== '0'))
-      // Transform each boolean[] into is VariableAssignment counterpart
+      // Transform each boolean[] into is VariableAssignment counterpart, .e.g
+      // {
+      //   [variables[0]]: true,
+      //   [variables[1]]: false,
+      //   [variables[2]]: true,
+      // }
       .map((boolAssignments) =>
         Object.fromEntries(boolAssignments.map((val, idx) => [variables[idx], val])),
       )
   );
 }
 
+// Generate an array of all solutions the satisfy all clauses.
 export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignment> {
   const solutions: VariableAssignment[] = [];
   for (const assignment of allPossibleAssignments([...getVariables(expr)])) {
@@ -99,6 +114,7 @@ export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignm
   return solutions;
 }
 
+// Find one solution that satisfies all clauses.
 export function getDpllSolution(
   expr: BooleanExpr,
   assignment: VariableAssignment = {},
