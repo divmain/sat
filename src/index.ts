@@ -1,6 +1,6 @@
 type Variable = string;
 
-type VariableAssignment = Record<Variable, boolean>;
+type VariableConfiguration = Record<Variable, boolean>;
 
 interface AndExpr {
   and: Array<Variable | BooleanExpr>;
@@ -66,7 +66,10 @@ function getVariables(expr: BooleanExpr, variables = new Set<Variable>()): Set<V
   return variables;
 }
 
-function expressionIsTrue(expr: BooleanExpr | Variable, assignment: VariableAssignment): boolean {
+function expressionIsTrue(
+  expr: BooleanExpr | Variable,
+  assignment: VariableConfiguration,
+): boolean {
   if (isVariable(expr)) {
     return assignment[expr];
   }
@@ -82,7 +85,7 @@ function expressionIsTrue(expr: BooleanExpr | Variable, assignment: VariableAssi
   throw new Error('Invalid BooleanExpr');
 }
 
-function allPossibleAssignments(variables: Array<Variable>): Array<VariableAssignment> {
+function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfiguration> {
   const numVars = variables.length;
   // The number of unique assignment configurations is equal to 2 ** numVars.
   return (
@@ -91,7 +94,7 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableAssig
       .map((num: number) => (num >>> 0).toString(2).padStart(numVars, '0'))
       // Transform each stringified binary into boolean[], e.g. [true, false, true]
       .map((binaryStr: string) => binaryStr.split('').map((zeroOrOne) => zeroOrOne !== '0'))
-      // Transform each boolean[] into is VariableAssignment counterpart, .e.g
+      // Transform each boolean[] into is VariableConfiguration counterpart, .e.g
       // {
       //   [variables[0]]: true,
       //   [variables[1]]: false,
@@ -104,8 +107,8 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableAssig
 }
 
 // Generate an array of all solutions the satisfy all clauses.
-export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignment> {
-  const solutions: VariableAssignment[] = [];
+export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableConfiguration> {
+  const solutions: VariableConfiguration[] = [];
   for (const assignment of allPossibleAssignments([...getVariables(expr)])) {
     if (expressionIsTrue(expr, assignment)) {
       solutions.push(assignment);
@@ -117,8 +120,8 @@ export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignm
 // Find one solution that satisfies all clauses.
 export function getDpllSolution(
   expr: BooleanExpr,
-  assignment: VariableAssignment = {},
-): VariableAssignment | null {
+  assignment: VariableConfiguration = {},
+): VariableConfiguration | null {
   const variables = getVariables(expr);
 
   const unassignedVars = Array.from(variables).filter((v) => !(v in assignment));
@@ -129,14 +132,14 @@ export function getDpllSolution(
   const varToTry = unassignedVars[0];
 
   // Try assigning True to the first unassigned variable.
-  const newAssignmentTrue: VariableAssignment = { ...assignment, [varToTry]: true };
+  const newAssignmentTrue: VariableConfiguration = { ...assignment, [varToTry]: true };
   const setTrueSolution = getDpllSolution(expr, newAssignmentTrue);
   if (setTrueSolution) {
     return setTrueSolution;
   }
 
   // Try assigning False to the first unassigned variable.
-  const newAssignmentFalse: VariableAssignment = { ...assignment, [varToTry]: false };
+  const newAssignmentFalse: VariableConfiguration = { ...assignment, [varToTry]: false };
   const setFalseSolution = getDpllSolution(expr, newAssignmentFalse);
   if (setFalseSolution) {
     return setFalseSolution;
