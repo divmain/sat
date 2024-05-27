@@ -1,14 +1,6 @@
 import { describe } from 'node:test';
 import assert from 'node:assert';
-import {
-  and,
-  or,
-  not,
-  implies,
-  xor,
-  bruteForceAllSolutions,
-  getDpllSolution,
-} from '../src';
+import { and, or, not, implies, xor, bruteForceAllSolutions, getDpllSolution } from '../src';
 
 const oneOf = (...assertions: (() => void)[]) => {
   const errors = assertions
@@ -25,15 +17,14 @@ const oneOf = (...assertions: (() => void)[]) => {
   if (assertions.length === errors.length) {
     throw assertions[0];
   }
-}
-
+};
 
 describe('getDpllSolution', () => {
   describe('solvable', () => {
     describe('and', () => {
       assert.deepEqual(getDpllSolution(and('a', 'b')), { a: true, b: true });
     });
-   
+
     describe('or', () => {
       oneOf(
         () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: true, b: true }),
@@ -56,14 +47,7 @@ describe('getDpllSolution', () => {
 
     describe('complex', () => {
       assert.deepEqual(
-        getDpllSolution(
-          and(
-            not('b'),
-            or('a', 'b'),
-            xor('b', 'c'),
-            implies('c', and('d', 'e')),
-          ),
-        ),
+        getDpllSolution(and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')))),
         {
           a: true,
           b: false,
@@ -97,16 +81,13 @@ describe('bruteForceAllSolutions', () => {
     describe('and', () => {
       assert.deepEqual(bruteForceAllSolutions(and('a', 'b')), [{ a: true, b: true }]);
     });
-   
+
     describe('or', () => {
-      assert.deepEqual(bruteForceAllSolutions(
-        or('a', 'b')),
-        [
-          { a: false, b: true },
-          { a: true, b: false },
-          { a: true, b: true },
-        ],
-      );
+      assert.deepEqual(bruteForceAllSolutions(or('a', 'b')), [
+        { a: false, b: true },
+        { a: true, b: false },
+        { a: true, b: true },
+      ]);
     });
 
     describe('not', () => {
@@ -114,43 +95,34 @@ describe('bruteForceAllSolutions', () => {
     });
 
     describe('implies', () => {
-      assert.deepEqual(bruteForceAllSolutions(
-        implies('a', 'b')),
-        [
-          { a: false, b: false },
-          { a: false, b: true },
-          { a: true, b: true },
-        ],
-      );
+      assert.deepEqual(bruteForceAllSolutions(implies('a', 'b')), [
+        { a: false, b: false },
+        { a: false, b: true },
+        { a: true, b: true },
+      ]);
     });
 
     describe('xor', () => {
-      assert.deepEqual(bruteForceAllSolutions(
-        xor('a', 'b')),
-        [
-          { a: false, b: true },
-          { a: true, b: false },
-        ],
-      );
+      assert.deepEqual(bruteForceAllSolutions(xor('a', 'b')), [
+        { a: false, b: true },
+        { a: true, b: false },
+      ]);
     });
 
     describe('complex', () => {
       assert.deepEqual(
         bruteForceAllSolutions(
-          and(
-            not('b'),
-            or('a', 'b'),
-            xor('b', 'c'),
-            implies('c', and('d', 'e')),
-          ),
+          and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e'))),
         ),
-        [{
-          a: true,
-          b: false,
-          c: true,
-          d: true,
-          e: true,
-        }],
+        [
+          {
+            a: true,
+            b: false,
+            c: true,
+            d: true,
+            e: true,
+          },
+        ],
       );
     });
   });

@@ -8,8 +8,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "check": "biome check ./src",
-    "fix": "biome check --apply ./src",
+    "check": "biome check ./src ./test",
+    "fix": "biome check --apply ./src ./test",
     "test": "globstar -- tsx --test --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
     "test-watch": "globstar -- tsx --test --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'",
     "test-only": "globstar -- tsx --test-only --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
