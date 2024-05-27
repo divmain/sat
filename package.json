@@ -10,12 +10,20 @@
     "build": "tsc",
     "check": "biome check ./src",
     "fix": "biome check --apply ./src",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "globstar -- tsx --test --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
+    "test-watch": "globstar -- tsx --test --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'",
+    "test-only": "globstar -- tsx --test-only --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
+    "test-only-watch": "globstar -- tsx --test-only --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'"
   },
   "author": "Dale Bustad <github@dale.link>",
   "license": "MIT",
   "devDependencies": {
     "@biomejs/biome": "^1.7.3",
+    "globstar": "^1.0.0",
+    "tsx": "^4.11.0",
     "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@types/node": "^20.12.12"
   }
 }
