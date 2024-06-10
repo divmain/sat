@@ -1,6 +1,18 @@
 import { describe, it } from 'node:test';
+import { hrtime } from 'node:process';
 import assert from 'node:assert';
-import { and, or, not, implies, xor, bruteForceAllSolutions, getDpllSolution } from '../src';
+import {
+  and,
+  or,
+  not,
+  implies,
+  xor,
+  bruteForceAllSolutions,
+  getDpllSolution,
+  type BooleanExpr,
+  type SelectNextVariable,
+  Value,
+} from '../src';
 
 const oneOf = (...assertions: (() => void)[]) => {
   const errors = assertions
@@ -38,11 +50,11 @@ describe('getDpllSolution', () => {
     });
 
     it('supports implies operator', () => {
-      assert.deepEqual(getDpllSolution(implies('a', 'b')), { a: true, b: true });
+      assert.deepEqual(getDpllSolution(implies('a', 'b')), { a: false, b: false });
     });
 
     it('supports xor operator', () => {
-      assert.deepEqual(getDpllSolution(xor('a', 'b')), { a: true, b: false });
+      assert.deepEqual(getDpllSolution(xor('a', 'b')), { a: false, b: true });
     });
 
     it('supports complex clauses', () => {
@@ -58,36 +70,130 @@ describe('getDpllSolution', () => {
       );
     });
 
-    it('can solve computationally expensive problems', () => {
-      const solution = getDpllSolution(
-        and(
-          xor('A', 'B'),
-          'A',
-          or('B', 'C'),
-          or('C', 'D'),
-          or('B', 'D'),
-          or('E', 'F'),
-          or('E', not('F')),
-          or('F', 'A'),
-          implies('F', 'G'),
-          xor('G', 'A'),
-          and('H', 'I'),
-          or('H', 'I'),
-          xor('I', 'J'),
-          'K',
-          'L',
-          'M',
-          'N',
-          'O',
-          'P',
-          'Q',
-          'R',
-          'S',
-          'T',
-          'U',
-        ),
-      );
-      assert.notEqual(solution, null);
+    describe('hypergraph traversal problems', () => {
+      // With the following hypergraph, each node can only be visited if _all_
+      // parent nodes were visited.
+      //        ╭─╮
+      //     ┌─▶│b│────────┐
+      // ╭─╮ │  ╰─╯    ╭─╮ │
+      // │a│─┤      ┌─▶│g│─┤
+      // ╰─╯ │  ╭─╮ │  ╰─╯ │  ╭─╮
+      //     └─▶│c│─┤      ├─▶│h│
+      //        ╰─╯ │  ╭─╮ │  ╰─╯
+      //            ├─▶│f│─┘
+      // ╭─╮    ╭─╮ │  ╰─╯
+      // │d│───▶│e│─┘
+      // ╰─╯    ╰─╯
+
+      // There may also be nodes that do not need to be visited in order for
+      // particular terminal nodes (e.g. 'h') to be reached.
+      // ╭─╮   ╭─╮   ╭─╮   ╭─╮   ╭─╮   ╭─╮
+      // │i│──▶│j│──▶│k│──▶│l│──▶│m│──▶│n│
+      // ╰─╯   ╰─╯   ╰─╯   ╰─╯   ╰─╯   ╰─╯
+      //                                │
+      //  ┌─────────────────────────────┘
+      //  ▼
+      // ╭─╮   ╭─╮   ╭─╮   ╭─╮   ╭─╮
+      // │o│──▶│p│──▶│q│──▶│r│──▶│s│
+      // ╰─╯   ╰─╯   ╰─╯   ╰─╯   ╰─╯
+
+      // ... the edges can be expressed as prerequisites...
+      const nodePrereqs = [
+        // for b to be true/visited, a must be true/visited
+        ['b', 'a'],
+        // etc
+        ['c', 'a'],
+        ['e', 'd'],
+        ['g', 'c'],
+        ['f', 'c'],
+        ['f', 'e'],
+        ['h', 'b'],
+        ['h', 'g'],
+        // including the disjoint subgraph
+        ['j', 'i'],
+        ['k', 'j'],
+        ['l', 'k'],
+        ['m', 'l'],
+        ['n', 'm'],
+        ['o', 'n'],
+        ['p', 'o'],
+        ['q', 'p'],
+        ['r', 'q'],
+        ['s', 'r'],
+      ];
+
+      // ... which can then be transformed into clauses...
+      const baseClauses: BooleanExpr[] = nodePrereqs.map(([a, b]) => implies(a, b));
+      // ... and relationships.
+      const relationships = nodePrereqs.reduce((memo, [a, b]) => {
+        if (!memo.has(b)) {
+          memo.set(b, []);
+        }
+        // biome-ignore lint/style/noNonNullAssertion: existence was just checked
+        memo.get(b)!.push(a);
+        return memo;
+      }, new Map<string, string[]>());
+
+      // When a solution is being sought, we can use the structure of the hypergraph to
+      // select the next variable that should receive a value.
+      const selectNextVar: SelectNextVariable = (variables, assignments) => {
+        const candidates = variables.filter((varName) => assignments[varName] === Value.UNSET);
+        if (!candidates.length) {
+          return null;
+        }
+
+        const satisfiedRelationships = Object.fromEntries(
+          candidates.map((candidate) => [candidate, 0]),
+        );
+
+        // for each variable under consideration
+        for (const candidate of candidates) {
+          // identify its "parent" variables/nodes
+          const connectedVars = relationships.get(candidate);
+          if (connectedVars) {
+            // and track how many parents are already satisfied
+            for (const connectedVar of connectedVars) {
+              if (assignments[connectedVar] === Value.TRUE) {
+                satisfiedRelationships[candidate] += 1;
+              } else if (assignments[connectedVar] === Value.FALSE) {
+                satisfiedRelationships[candidate] = -1 * variables.length;
+              }
+            }
+          }
+        }
+
+        let topCandidate: string = candidates[0];
+        let topCandidateRank = Number.NEGATIVE_INFINITY;
+        for (const candidate of candidates) {
+          const rank = satisfiedRelationships[candidate];
+          if (rank > topCandidateRank) {
+            topCandidate = candidate;
+            topCandidateRank = rank;
+          }
+        }
+
+        return topCandidateRank >= 1 ? [topCandidate, true] : [topCandidate, false];
+      };
+
+      it('can be efficiently solved', () => {
+        const slowStart = hrtime.bigint();
+        const slowSolution = getDpllSolution(and(...baseClauses), { h: Value.TRUE });
+        const slowEnd = hrtime.bigint();
+
+        const fastStart = hrtime.bigint();
+        const fastSolution = getDpllSolution(and(...baseClauses), { h: Value.TRUE }, selectNextVar);
+        const fastEnd = hrtime.bigint();
+
+        assert.deepEqual(slowSolution, fastSolution);
+
+        const slowTime = slowEnd - slowStart;
+        const fastTime = fastEnd - fastStart;
+
+        assert.ok(
+          slowTime > fastTime * 1000n,
+          'heuristic based solver should be at least 1000 times faster',
+        );
+      });
     });
   });
 

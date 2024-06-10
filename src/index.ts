@@ -1,12 +1,12 @@
 type Variable = string;
 
-enum Value {
+export enum Value {
   UNSET = -1,
   FALSE = 0,
   TRUE = 1,
 }
 
-type VariableConfiguration = Record<Variable, Value>;
+type VariableAssignments = Record<Variable, Value>;
 
 interface AndExpr {
   and: Array<Variable | BooleanExpr>;
@@ -17,7 +17,7 @@ interface OrExpr {
 interface NotExpr {
   not: Variable | BooleanExpr;
 }
-type BooleanExpr = AndExpr | OrExpr | NotExpr;
+export type BooleanExpr = AndExpr | OrExpr | NotExpr;
 
 // All variables or subexpressions must be true.
 export const and = (...exprs: Array<Variable | BooleanExpr>): BooleanExpr => ({ and: exprs });
@@ -72,7 +72,7 @@ function getVariables(expr: BooleanExpr, variables = new Set<Variable>()): Set<V
   return variables;
 }
 
-function expressionValue(expr: BooleanExpr | Variable, assignment: VariableConfiguration): Value {
+function expressionValue(expr: BooleanExpr | Variable, assignment: VariableAssignments): Value {
   if (isVariable(expr)) {
     return assignment[expr];
   }
@@ -92,7 +92,7 @@ function expressionValue(expr: BooleanExpr | Variable, assignment: VariableConfi
   throw new Error('Invalid BooleanExpr');
 }
 
-function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfiguration> {
+function allPossibleAssignments(variables: Array<Variable>): Array<VariableAssignments> {
   const numVars = variables.length;
   // The number of unique assignment configurations is equal to 2 ** numVars.
   return (
@@ -103,7 +103,7 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfi
       .map((binaryStr: string) =>
         binaryStr.split('').map((zeroOrOne) => (zeroOrOne !== '0' ? Value.TRUE : Value.FALSE)),
       )
-      // Transform each boolean[] into is VariableConfiguration counterpart, .e.g
+      // Transform each boolean[] into is VariableAssignments counterpart, .e.g
       // {
       //   [variables[0]]: Value.TRUE,
       //   [variables[1]]: Value.FALSE,
@@ -116,8 +116,8 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfi
 }
 
 // Generate an array of all solutions the satisfy all clauses.
-export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableConfiguration> {
-  const solutions: VariableConfiguration[] = [];
+export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignments> {
+  const solutions: VariableAssignments[] = [];
   for (const assignment of allPossibleAssignments([...getVariables(expr)])) {
     if (expressionValue(expr, assignment) === Value.TRUE) {
       solutions.push(assignment);
@@ -126,37 +126,58 @@ export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableConfigu
   return solutions;
 }
 
-// Find one solution that satisfies all clauses.
-export function getDpllSolution(
+export type NextVariable = [Variable, boolean] | null;
+export type SelectNextVariable = (
+  variables: Variable[],
+  assignments: VariableAssignments,
+) => NextVariable;
+
+const defaultSelect: SelectNextVariable = (variables, assignments) => {
+  const unassignedVar = variables.find((varName) => assignments[varName] === Value.UNSET);
+  return unassignedVar ? [unassignedVar, false] : null;
+};
+
+export function getInitialAssignments(expr: BooleanExpr): VariableAssignments {
+  const variables = Array.from(getVariables(expr));
+  return Object.fromEntries(variables.map((variableName) => [variableName, Value.UNSET]));
+}
+
+function _getDpllSolution(
   expr: BooleanExpr,
-  assignment?: VariableConfiguration,
-): VariableConfiguration | null {
+  assignments: VariableAssignments,
+  selectNextVar: SelectNextVariable,
+): VariableAssignments | null {
   const variables = Array.from(getVariables(expr));
 
-  if (!assignment) {
-    assignment = Object.fromEntries(variables.map((variableName) => [variableName, Value.UNSET]));
+  const nextVar = selectNextVar(variables, assignments);
+  if (!nextVar) {
+    return expressionValue(expr, assignments) ? assignments : null;
   }
+  const [unassignedVar, checkTrueFirst] = nextVar;
 
-  const unassignedVar = variables.find((varName) => assignment[varName] === Value.UNSET);
-  if (!unassignedVar) {
-    return expressionValue(expr, assignment) ? assignment : null;
-  }
+  const newAssignments: VariableAssignments = { ...assignments };
 
-  // Try assigning True to the first unassigned variable.
-  const newAssignmentTrue: VariableConfiguration = { ...assignment };
-  newAssignmentTrue[unassignedVar] = Value.TRUE;
-  const setTrueSolution = getDpllSolution(expr, newAssignmentTrue);
+  newAssignments[unassignedVar] = checkTrueFirst ? Value.TRUE : Value.FALSE;
+  const setTrueSolution = _getDpllSolution(expr, newAssignments, selectNextVar);
   if (setTrueSolution) {
     return setTrueSolution;
   }
 
-  // Try assigning False to the first unassigned variable.
-  const newAssignmentFalse: VariableConfiguration = { ...assignment };
-  newAssignmentFalse[unassignedVar] = Value.FALSE;
-  const setFalseSolution = getDpllSolution(expr, newAssignmentFalse);
+  newAssignments[unassignedVar] = checkTrueFirst ? Value.FALSE : Value.TRUE;
+  const setFalseSolution = _getDpllSolution(expr, newAssignments, selectNextVar);
   if (setFalseSolution) {
     return setFalseSolution;
   }
 
   return null;
+}
+
+// Find one solution that satisfies all clauses.
+export function getDpllSolution(
+  expr: BooleanExpr,
+  initialAssignments?: VariableAssignments,
+  selectNextVar: SelectNextVariable = defaultSelect,
+): VariableAssignments | null {
+  initialAssignments = { ...getInitialAssignments(expr), ...initialAssignments };
+  return _getDpllSolution(expr, initialAssignments, selectNextVar);
 }
