@@ -1,6 +1,12 @@
 type Variable = string;
 
-type VariableConfiguration = Record<Variable, boolean>;
+enum Value {
+  UNSET = -1,
+  FALSE = 0,
+  TRUE = 1,
+}
+
+type VariableConfiguration = Record<Variable, Value>;
 
 interface AndExpr {
   and: Array<Variable | BooleanExpr>;
@@ -66,21 +72,22 @@ function getVariables(expr: BooleanExpr, variables = new Set<Variable>()): Set<V
   return variables;
 }
 
-function expressionIsTrue(
-  expr: BooleanExpr | Variable,
-  assignment: VariableConfiguration,
-): boolean {
+function expressionValue(expr: BooleanExpr | Variable, assignment: VariableConfiguration): Value {
   if (isVariable(expr)) {
     return assignment[expr];
   }
   if ('and' in expr) {
-    return expr.and.every((subExpr) => expressionIsTrue(subExpr, assignment));
+    return expr.and.every((subExpr) => expressionValue(subExpr, assignment) === Value.TRUE)
+      ? Value.TRUE
+      : Value.FALSE;
   }
   if ('or' in expr) {
-    return expr.or.some((subExpr) => expressionIsTrue(subExpr, assignment));
+    return expr.or.some((subExpr) => expressionValue(subExpr, assignment) === Value.TRUE)
+      ? Value.TRUE
+      : Value.FALSE;
   }
   if ('not' in expr) {
-    return !expressionIsTrue(expr.not, assignment);
+    return expressionValue(expr.not, assignment) === Value.FALSE ? Value.TRUE : Value.FALSE;
   }
   throw new Error('Invalid BooleanExpr');
 }
@@ -92,13 +99,15 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfi
     sequence(2 ** numVars)
       // Transform each number into its stringified binary representation, e.g. '101'
       .map((num: number) => (num >>> 0).toString(2).padStart(numVars, '0'))
-      // Transform each stringified binary into boolean[], e.g. [true, false, true]
-      .map((binaryStr: string) => binaryStr.split('').map((zeroOrOne) => zeroOrOne !== '0'))
+      // Transform each stringified binary into boolean[], e.g. [Value.TRUE, Value.FALSE, Value.TRUE]
+      .map((binaryStr: string) =>
+        binaryStr.split('').map((zeroOrOne) => (zeroOrOne !== '0' ? Value.TRUE : Value.FALSE)),
+      )
       // Transform each boolean[] into is VariableConfiguration counterpart, .e.g
       // {
-      //   [variables[0]]: true,
-      //   [variables[1]]: false,
-      //   [variables[2]]: true,
+      //   [variables[0]]: Value.TRUE,
+      //   [variables[1]]: Value.FALSE,
+      //   [variables[2]]: Value.TRUE,
       // }
       .map((boolAssignments) =>
         Object.fromEntries(boolAssignments.map((val, idx) => [variables[idx], val])),
@@ -110,7 +119,7 @@ function allPossibleAssignments(variables: Array<Variable>): Array<VariableConfi
 export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableConfiguration> {
   const solutions: VariableConfiguration[] = [];
   for (const assignment of allPossibleAssignments([...getVariables(expr)])) {
-    if (expressionIsTrue(expr, assignment)) {
+    if (expressionValue(expr, assignment) === Value.TRUE) {
       solutions.push(assignment);
     }
   }
@@ -120,26 +129,30 @@ export function bruteForceAllSolutions(expr: BooleanExpr): Array<VariableConfigu
 // Find one solution that satisfies all clauses.
 export function getDpllSolution(
   expr: BooleanExpr,
-  assignment: VariableConfiguration = {},
+  assignment?: VariableConfiguration,
 ): VariableConfiguration | null {
-  const variables = getVariables(expr);
+  const variables = Array.from(getVariables(expr));
 
-  const unassignedVars = Array.from(variables).filter((v) => !(v in assignment));
-  if (unassignedVars.length === 0) {
-    return expressionIsTrue(expr, assignment) ? assignment : null;
+  if (!assignment) {
+    assignment = Object.fromEntries(variables.map((variableName) => [variableName, Value.UNSET]));
   }
 
-  const varToTry = unassignedVars[0];
+  const unassignedVar = variables.find((varName) => assignment[varName] === Value.UNSET);
+  if (!unassignedVar) {
+    return expressionValue(expr, assignment) ? assignment : null;
+  }
 
   // Try assigning True to the first unassigned variable.
-  const newAssignmentTrue: VariableConfiguration = { ...assignment, [varToTry]: true };
+  const newAssignmentTrue: VariableConfiguration = { ...assignment };
+  newAssignmentTrue[unassignedVar] = Value.TRUE;
   const setTrueSolution = getDpllSolution(expr, newAssignmentTrue);
   if (setTrueSolution) {
     return setTrueSolution;
   }
 
   // Try assigning False to the first unassigned variable.
-  const newAssignmentFalse: VariableConfiguration = { ...assignment, [varToTry]: false };
+  const newAssignmentFalse: VariableConfiguration = { ...assignment };
+  newAssignmentFalse[unassignedVar] = Value.FALSE;
   const setFalseSolution = getDpllSolution(expr, newAssignmentFalse);
   if (setFalseSolution) {
     return setFalseSolution;
