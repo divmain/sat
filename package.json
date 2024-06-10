@@ -1,6 +1,7 @@
 {
   "name": "@divmain/sat",
   "version": "1.0.1",
+  "type": "module",
   "description": "",
   "main": "dist/index.js",
   "files": [
