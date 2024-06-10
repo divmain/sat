@@ -1,4 +1,4 @@
-import { describe } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { and, or, not, implies, xor, bruteForceAllSolutions, getDpllSolution } from '../src';
 
@@ -21,11 +21,11 @@ const oneOf = (...assertions: (() => void)[]) => {
 
 describe('getDpllSolution', () => {
   describe('solvable', () => {
-    describe('and', () => {
+    it('supports and operator', () => {
       assert.deepEqual(getDpllSolution(and('a', 'b')), { a: true, b: true });
     });
 
-    describe('or', () => {
+    it('supports or operator', () => {
       oneOf(
         () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: true, b: true }),
         () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: true, b: false }),
@@ -33,19 +33,19 @@ describe('getDpllSolution', () => {
       );
     });
 
-    describe('not', () => {
+    it('supports not operator', () => {
       assert.deepEqual(getDpllSolution(not('b')), { b: false });
     });
 
-    describe('implies', () => {
+    it('supports implies operator', () => {
       assert.deepEqual(getDpllSolution(implies('a', 'b')), { a: true, b: true });
     });
 
-    describe('xor', () => {
+    it('supports xor operator', () => {
       assert.deepEqual(getDpllSolution(xor('a', 'b')), { a: true, b: false });
     });
 
-    describe('complex', () => {
+    it('supports complex clauses', () => {
       assert.deepEqual(
         getDpllSolution(and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')))),
         {
@@ -56,6 +56,38 @@ describe('getDpllSolution', () => {
           e: true,
         },
       );
+    });
+
+    it('can solve computationally expensive problems', () => {
+      const solution = getDpllSolution(
+        and(
+          xor('A', 'B'),
+          'A',
+          or('B', 'C'),
+          or('C', 'D'),
+          or('B', 'D'),
+          or('E', 'F'),
+          or('E', not('F')),
+          or('F', 'A'),
+          implies('F', 'G'),
+          xor('G', 'A'),
+          and('H', 'I'),
+          or('H', 'I'),
+          xor('I', 'J'),
+          'K',
+          'L',
+          'M',
+          'N',
+          'O',
+          'P',
+          'Q',
+          'R',
+          'S',
+          'T',
+          'U',
+        ),
+      );
+      assert.notEqual(solution, null);
     });
   });
 
