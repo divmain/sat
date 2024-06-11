@@ -8,7 +8,7 @@ import {
   implies,
   xor,
   bruteForceAllSolutions,
-  getDpllSolution,
+  getSolution,
   type BooleanExpr,
   type SelectNextVariable,
   Value,
@@ -31,35 +31,35 @@ const oneOf = (...assertions: (() => void)[]) => {
   }
 };
 
-describe('getDpllSolution', () => {
+describe('getSolution', () => {
   describe('solvable', () => {
     it('supports and operator', () => {
-      assert.deepEqual(getDpllSolution(and('a', 'b')), { a: true, b: true });
+      assert.deepEqual(getSolution(and('a', 'b')), { a: true, b: true });
     });
 
     it('supports or operator', () => {
       oneOf(
-        () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: true, b: true }),
-        () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: true, b: false }),
-        () => assert.deepEqual(getDpllSolution(or('a', 'b')), { a: false, b: true }),
+        () => assert.deepEqual(getSolution(or('a', 'b')), { a: true, b: true }),
+        () => assert.deepEqual(getSolution(or('a', 'b')), { a: true, b: false }),
+        () => assert.deepEqual(getSolution(or('a', 'b')), { a: false, b: true }),
       );
     });
 
     it('supports not operator', () => {
-      assert.deepEqual(getDpllSolution(not('b')), { b: false });
+      assert.deepEqual(getSolution(not('b')), { b: false });
     });
 
     it('supports implies operator', () => {
-      assert.deepEqual(getDpllSolution(implies('a', 'b')), { a: false, b: false });
+      assert.deepEqual(getSolution(implies('a', 'b')), { a: false, b: false });
     });
 
     it('supports xor operator', () => {
-      assert.deepEqual(getDpllSolution(xor('a', 'b')), { a: false, b: true });
+      assert.deepEqual(getSolution(xor('a', 'b')), { a: false, b: true });
     });
 
     it('supports complex clauses', () => {
       assert.deepEqual(
-        getDpllSolution(and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')))),
+        getSolution(and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')))),
         {
           a: true,
           b: false,
@@ -177,11 +177,11 @@ describe('getDpllSolution', () => {
 
       it('can be efficiently solved', () => {
         const slowStart = hrtime.bigint();
-        const slowSolution = getDpllSolution(and(...baseClauses), { h: Value.TRUE });
+        const slowSolution = getSolution(and(...baseClauses), { h: Value.TRUE });
         const slowEnd = hrtime.bigint();
 
         const fastStart = hrtime.bigint();
-        const fastSolution = getDpllSolution(and(...baseClauses), { h: Value.TRUE }, selectNextVar);
+        const fastSolution = getSolution(and(...baseClauses), { h: Value.TRUE }, selectNextVar);
         const fastEnd = hrtime.bigint();
 
         assert.deepEqual(slowSolution, fastSolution);
@@ -199,7 +199,7 @@ describe('getDpllSolution', () => {
 
   describe('unsolvable', () => {
     assert.deepEqual(
-      getDpllSolution(
+      getSolution(
         and(
           not('b'),
           or('a', 'b'),

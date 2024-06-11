@@ -142,7 +142,7 @@ export function getInitialAssignments(expr: BooleanExpr): VariableAssignments {
   return Object.fromEntries(variables.map((variableName) => [variableName, Value.UNSET]));
 }
 
-function _getDpllSolution(
+function dpllSolution(
   expr: BooleanExpr,
   assignments: VariableAssignments,
   selectNextVar: SelectNextVariable,
@@ -158,13 +158,13 @@ function _getDpllSolution(
   const newAssignments: VariableAssignments = { ...assignments };
 
   newAssignments[unassignedVar] = checkTrueFirst ? Value.TRUE : Value.FALSE;
-  const setTrueSolution = _getDpllSolution(expr, newAssignments, selectNextVar);
+  const setTrueSolution = dpllSolution(expr, newAssignments, selectNextVar);
   if (setTrueSolution) {
     return setTrueSolution;
   }
 
   newAssignments[unassignedVar] = checkTrueFirst ? Value.FALSE : Value.TRUE;
-  const setFalseSolution = _getDpllSolution(expr, newAssignments, selectNextVar);
+  const setFalseSolution = dpllSolution(expr, newAssignments, selectNextVar);
   if (setFalseSolution) {
     return setFalseSolution;
   }
@@ -173,11 +173,11 @@ function _getDpllSolution(
 }
 
 // Find one solution that satisfies all clauses.
-export function getDpllSolution(
+export function getSolution(
   expr: BooleanExpr,
   initialAssignments?: VariableAssignments,
   selectNextVar: SelectNextVariable = defaultSelect,
 ): VariableAssignments | null {
   initialAssignments = { ...getInitialAssignments(expr), ...initialAssignments };
-  return _getDpllSolution(expr, initialAssignments, selectNextVar);
+  return dpllSolution(expr, initialAssignments, selectNextVar);
 }
