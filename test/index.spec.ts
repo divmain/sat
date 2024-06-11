@@ -71,7 +71,7 @@ describe('getDpllSolution', () => {
     });
 
     describe('hypergraph traversal problems', () => {
-      // With the following hypergraph, each node can only be visited if _all_
+      // With the following rgraph, each node can only be visited if _all_
       // parent nodes were visited.
       //        ╭─╮
       //     ┌─▶│b│────────┐
