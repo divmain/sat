@@ -16,34 +16,58 @@ or
 yarn add @divmain/sat
 ```
 
-## Usage
+## Basic Usage
 
-### Importing `@divmain/sat`
+The library can be inported like so:
 
 ```typescript
-import { and, or, not, implies, xor, bruteForceAllSolutions, getSolution } from '@divmain/sat';
+import {
+  and,
+  or,
+  not,
+  implies,
+  xor,
+  bruteForceAllSolutions,
+  getSolution,
+} from '@divmain/sat';
 ```
 
 ### Boolean Expressions
 
 This library provides helper functions to construct Boolean expressions:
 
-- `and(...exprs: Array<Variable | BooleanExpr>): BooleanExpr`: All variables or subexpressions must be true.
-- `or(...exprs: Array<Variable | BooleanExpr>): BooleanExpr`: At least one variable or subexpression must be true.
-- `not(expr: Variable | BooleanExpr): BooleanExpr`: The specified variable or subexpression cannot be true.
-- `implies(a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr`: If `a` is true then `b` must also be true. If `a` is false, `b` can be true or false.
-- `xor(a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr`: Either `a` or `b` must be true, but not both.
+- `and(...exprs)`: All variables or subexpressions must be true.
+- `or(...exprs)`: At least one variable or subexpression must be true.
+- `not(expr)`: The specified variable or subexpression cannot be true.
+- `implies(first, second)`: If `first` is true then `second` must also be true. If `first` is false, `second` can be true or false.
+- `xor(first, second)`: Either `first` or `second` must be true, but not both.
+
+In the above function signatures, both variables (strings) and other expressions can be provided wherever an expression is expected.
 
 ## Example
 
 ### Finding All Solutions
 
-To find all solutions to a given Boolean expression, use bruteForceAllSolutions:
+To find all solutions to a given Boolean expression, use `bruteForceAllSolutions`:
 
 ```typescript
-const expr = and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')));
+const expr = and(
+  not('b'),
+  or('a', 'b'),
+  xor('b', 'c'),
+  implies('c', and('d', 'e')),
+);
 const solutions = bruteForceAllSolutions(expr);
 console.log(solutions);
+// [
+//   {
+//     b: 0,
+//     a: 1,
+//     c: 1,
+//     d: 1,
+//     e: 1
+//   }
+// ]
 ```
 
 ### Finding a Single Solution
@@ -51,30 +75,42 @@ console.log(solutions);
 To find a single solution, use `getSolution`:
 
 ```typescript
-const expr = and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')));
+const expr = and(
+  not('b'),
+  or('a', 'b'),
+  xor('b', 'c'),
+  implies('c', and('d', 'e')),
+);
 const solution = getSolution(expr);
 console.log(solution);
+// {
+//   b: 0,
+//   a: 1,
+//   c: 1,
+//   d: 1,
+//   e: 1
+// }
 ```
 
 ## API
 
-### `bruteForceAllSolutions(expr: BooleanExpr): Array<VariableAssignments>`
+### `bruteForceAllSolutions(expression)`
 
 Returns all possible assignments that satisfy the given Boolean expression.
 
-- `expr`: A Boolean expression constructed using and, or, not, implies, and xor.
+- `expr`: a Boolean expression constructed using `and`, `or`, `not`, `implies`, and `xor`.
 - returns an array of objects representing all satisfying assignments.
 
-### `getSolution(expr: BooleanExpr, initialAssignments?: VariableAssignments, selectNextVar?: SelectNextVariable): VariableAssignments | null`
+### `getSolution(expression, initialAssignments?, selectNextVar?):`
 
 Finds a single solution using the DPLL algorithm.
 
-- `expr`: A Boolean expression constructed using and, or, not, implies, and xor.
-- `initialAssignments` (optional): Initial assignments for the variables.
-- `selectNextVar` (optional): A custom function to select the next variable to assign.
-- returns an object representing a satisfying assignment, or null if no solution exists.
+- `expr`: a Boolean expression constructed using and, or, not, implies, and xor.
+- `initialAssignments` (optional): initial assignments for the variables.
+- `selectNextVar` (optional): a custom function to select the next variable to assign.
+- returns an object representing a satisfying assignment, or `null` if no solution exists.
 
-#### Improving Performance with Variable Selection Heuristic
+### Improving Performance with Variable Selection Heuristic
 
 Computing a solution for complex boolean expressions can be computationally expensive. By default, the DPLL algorithm undergirding `getSolution` will recursively select variables & assign them values, doing so until all variables have a True or False assignment, and finally checking the assignments for validity against the provided boolean clause. The variable selection process is mostly random.
 
@@ -90,9 +126,9 @@ type Variable = string;
 
 - `variables`: An array of all variables in the Boolean expression.
 - `assignments`: The current assignments of variables.
-- returns null if no variables are left to assign, otherwise a tuple containing the next variable to assign and a boolean indicating whether to assign TRUE first.
+- returns `null` if no variables are left to assign, otherwise a tuple containing the next variable to assign and a boolean indicating whether to assign TRUE first.
 
-Example:
+#### Example
 
 ```typescript
 const selectNextVar: SelectNextVariable = (variables, assignments) => {
