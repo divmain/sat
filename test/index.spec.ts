@@ -71,8 +71,8 @@ describe('getSolution', () => {
     });
 
     describe('hypergraph traversal problems', () => {
-      // With the following rgraph, each node can only be visited if _all_
-      // parent nodes were visited.
+      // With the following graph, each node can only be visited if _all_
+      // parent nodes were already visited.
       //        ╭─╮
       //     ┌─▶│b│────────┐
       // ╭─╮ │  ╰─╯    ╭─╮ │
