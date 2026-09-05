@@ -4,15 +4,14 @@
 
 ## Active rewrite: read the plan first
 
-The repo is mid-migration from v1 (brute-force "DPLL") to v2 (MiniSat-style CDCL), tracked as **Janus plan `plan-7748`** — the full design doc lives at `.janus/plans/plan-7748.md`. Code comments referencing "Design § ..." point into that file. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. Do not "fix" or improve `src/legacy.ts` — it is the quarantined v1 solver, deleted at the API-rewire task.
+The repo is mid-migration from v1 (brute-force "DPLL") to v2 (MiniSat-style CDCL), tracked as **Janus plan `plan-7748`** — the full design doc lives at `.janus/plans/plan-7748.md`. Code comments referencing "Design § ..." point into that file. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. The quarantined v1 solver (`src/legacy.ts`) was deleted at the API-rewire task (task-e476); do not resurrect v1 entry points.
 
 Current module layout (transitional):
 
 - `src/expr.ts` — frozen formula frontend (`and`/`or`/`not`/`implies`/`xor`, `Value`, `getVariables`)
 - `src/compile.ts` — Tseitin compiler, `BooleanExpr → CompiledCnf`; literal helpers (MiniSat-style `lit = 2*v + isNeg`) live here; `solver.ts` imports them, never the reverse
 - `src/solver.ts` — CDCL core under construction (occurrence-list propagation done; search/learning added per phase)
-- `src/legacy.ts` — quarantined v1 solver (do not touch)
-- `src/index.ts` — public API; today re-exports `expr.ts` + `legacy.ts` only; v2 entry points land at the rewire task
+- `src/index.ts` — public API; re-exports `expr.ts` + `SolverStats`/`VariablePriority` (defined in `solver.ts`), defines `SolveOptions`, and implements `getSolution(expr, options?)`; `getAllSolutions`/`createSolver` land in later phases
 
 ## Commands
 

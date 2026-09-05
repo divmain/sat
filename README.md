@@ -1,6 +1,6 @@
 # @divmain/sat, a SAT solver library
 
-This library provides tools for solving Boolean satisfiability problems (SAT). It includes functions for generating all solutions to a given problem and for finding a single solution using the DPLL algorithm.
+This library provides tools for solving Boolean satisfiability problems (SAT). It includes functions for finding a single solution using a CDCL-style solver (v2). Model enumeration (`getAllSolutions`) and incremental solving (`createSolver`) arrive in upcoming releases.
 
 ## Installation
 
@@ -18,7 +18,7 @@ yarn add @divmain/sat
 
 ## Basic Usage
 
-The library can be inported like so:
+The library can be imported like so:
 
 ```typescript
 import {
@@ -27,9 +27,10 @@ import {
   not,
   implies,
   xor,
-  bruteForceAllSolutions,
+  Value,
   getSolution,
 } from '@divmain/sat';
+import type { SolveOptions } from '@divmain/sat';
 ```
 
 ### Boolean Expressions
@@ -46,30 +47,6 @@ In the above function signatures, both variables (strings) and other expressions
 
 ## Example
 
-### Finding All Solutions
-
-To find all solutions to a given Boolean expression, use `bruteForceAllSolutions`:
-
-```typescript
-const expr = and(
-  not('b'),
-  or('a', 'b'),
-  xor('b', 'c'),
-  implies('c', and('d', 'e')),
-);
-const solutions = bruteForceAllSolutions(expr);
-console.log(solutions);
-// [
-//   {
-//     b: 0,
-//     a: 1,
-//     c: 1,
-//     d: 1,
-//     e: 1
-//   }
-// ]
-```
-
 ### Finding a Single Solution
 
 To find a single solution, use `getSolution`:
@@ -84,63 +61,49 @@ const expr = and(
 const solution = getSolution(expr);
 console.log(solution);
 // {
-//   b: 0,
 //   a: 1,
+//   b: 0,
 //   c: 1,
 //   d: 1,
 //   e: 1
 // }
 ```
 
-## API
+### Guiding the Search
 
-### `bruteForceAllSolutions(expression)`
-
-Returns all possible assignments that satisfy the given Boolean expression.
-
-- `expr`: a Boolean expression constructed using `and`, `or`, `not`, `implies`, and `xor`.
-- returns an array of objects representing all satisfying assignments.
-
-### `getSolution(expression, initialAssignments?, selectNextVar?):`
-
-Finds a single solution using the DPLL algorithm.
-
-- `expr`: a Boolean expression constructed using and, or, not, implies, and xor.
-- `initialAssignments` (optional): initial assignments for the variables.
-- `selectNextVar` (optional): a custom function to select the next variable to assign.
-- returns an object representing a satisfying assignment, or `null` if no solution exists.
-
-### Improving Performance with Variable Selection Heuristic
-
-Computing a solution for complex boolean expressions can be computationally expensive. By default, the DPLL algorithm undergirding `getSolution` will recursively select variables & assign them values, doing so until all variables have a True or False assignment, and finally checking the assignments for validity against the provided boolean clause. The variable selection process is mostly random.
-
-However, if you have some knowledge about your problem space, you may be able to significantly improve the performance of `getSolution` by providing a custom variable selection heuristic through the `selectNextVar` argument. This allows you to guide the search process by selecting which variable to assign next, potentially reducing the number of recursive calls and speeding up the solution finding process. This speedup can be multiple orders of magnitude.
-
-The `selectNextVar` function should follow this signature:
+When a solution is returned, every named variable is assigned (`Value.TRUE` or `Value.FALSE`); `null` means the formula is unsatisfiable. Assumptions are passed via the options object and are propagated immediately (an inconsistent assumption set yields `null` fast). A custom branching heuristic can be supplied through `variablePriority`:
 
 ```typescript
-type SelectNextVariable = (variables: Variable[], assignments: VariableAssignments) => NextVariable;
-type NextVariable = [Variable, boolean] | null;
-type Variable = string;
-````
+import { getSolution, implies, Value } from '@divmain/sat';
+import type { VariablePriority } from '@divmain/sat';
 
-- `variables`: An array of all variables in the Boolean expression.
-- `assignments`: The current assignments of variables.
-- returns `null` if no variables are left to assign, otherwise a tuple containing the next variable to assign and a boolean indicating whether to assign TRUE first.
-
-#### Example
-
-```typescript
-const selectNextVar: SelectNextVariable = (variables, assignments) => {
-  // Select the first unassigned variable
-  const unassignedVar = variables.find((varName) => assignments[varName] === Value.UNSET);
-  // If there are no unassigned variables, return null
-  if (!unassignedVar) return null;
-  // Return the variable and specify to check TRUE first
-  return [unassignedVar, true];
+// Branch a=TRUE first; called only when the solver needs a decision.
+const priority: VariablePriority = (unassigned, assignments) => {
+  if (unassigned.includes('a')) return ['a', true];
+  return null; // defer to the default heuristic
 };
 
-const expr = and('a', or('b', not('c')));
-const solution = getSolution(expr, {}, selectNextVar);
-console.log(solution);
-````
+const solution = getSolution(implies('a', 'b'), {
+  assumptions: { a: Value.TRUE },
+  variablePriority: priority,
+});
+```
+
+## API
+
+### `getSolution(expression, options?)`
+
+Finds a single satisfying assignment using a CDCL-style solver (iterative search with unit propagation and scoped pure-literal elimination).
+
+- `expr`: a Boolean expression constructed using `and`, `or`, `not`, `implies`, and `xor`.
+- `options` (optional): a `SolveOptions` object:
+  - `assumptions` (optional): a partial assignment of `Variable` → `Value` describing known facts. Unknown variable names throw a descriptive `Error`; `Value.UNSET` entries are ignored; any other value throws. Assumptions propagate immediately, so a set inconsistent with the formula yields `null`.
+  - `variablePriority` (optional): a custom decision heuristic with signature `(unassigned: Variable[], assignments: Partial<Record<Variable, Value>>) => [Variable, boolean] | null`. It is called only when the solver needs a decision; returning `null` defers to the default heuristic. The returned variable must still be unassigned (unknown or already-assigned picks are ignored).
+  - `stats` (optional): an out-param `SolverStats` object corresponding to `{ decisions, propagations, conflicts, restarts, learnedClauses, learnedClausesCurrent }`; it is zeroed by the callee and then populated with the call's statistics.
+- returns an object representing a satisfying assignment (every named variable present, no auxiliary variables), or `null` if no solution exists.
+
+Empty formulas follow v1 semantics: `getSolution(and())` returns `{}` and `getSolution(or())` returns `null`.
+
+### Removed in v2
+
+The following v1 symbols were removed: `bruteForceAllSolutions`, `getInitialAssignments`, `selectNextVar` (and the `SelectNextVariable`/`NextVariable` types). `getAllSolutions` replaces brute-force enumeration in an upcoming release; the v2 API will also gain `createSolver` for incremental solving.

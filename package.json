@@ -8,6 +8,7 @@
     "dist"
   ],
   "scripts": {
+    "bench": "tsx ./test/bench.ts",
     "build": "tsc",
     "check": "biome check ./src ./test",
     "fix": "biome check --apply ./src ./test",
@@ -20,11 +21,10 @@
   "license": "MIT",
   "devDependencies": {
     "@biomejs/biome": "^1.7.3",
+    "@types/node": "^20.12.12",
     "globstar": "^1.0.0",
     "tsx": "^4.11.0",
     "typescript": "^5.4.5"
   },
-  "dependencies": {
-    "@types/node": "^20.12.12"
-  }
+  "dependencies": {}
 }
