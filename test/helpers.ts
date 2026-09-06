@@ -3,17 +3,23 @@
 // that import these helpers.
 
 import assert from 'node:assert';
+import { isDeepStrictEqual } from 'node:util';
 import { and, getVariables, implies, isVariable, not, or, Value, xor } from '../src/expr.js';
 import type { BooleanExpr, Variable, VariableAssignments } from '../src/expr.js';
 
-// Reference evaluator over the BooleanExpr AST, copied unchanged from the v1
-// solver. Ground truth for cross-checking the CNF solver's models.
+// Reference evaluator over the BooleanExpr AST, independent of the CNF solver.
+// Requires total numeric assignments; invalid variable reads fail loudly.
 export function expressionValue(
   expr: BooleanExpr | Variable,
   assignment: VariableAssignments,
 ): Value {
   if (isVariable(expr)) {
-    return assignment[expr];
+    const value = assignment[expr];
+    assert.ok(
+      Object.hasOwn(assignment, expr) && (value === Value.TRUE || value === Value.FALSE),
+      `reference evaluation requires an own TRUE/FALSE assignment for ${JSON.stringify(expr)}`,
+    );
+    return value;
   }
   if ('and' in expr) {
     return expr.and.every((subExpr) => expressionValue(subExpr, assignment) === Value.TRUE)
@@ -31,13 +37,13 @@ export function expressionValue(
   throw new Error('Invalid BooleanExpr');
 }
 
-// Stable, order-insensitive key for a model: variables sorted by name, each
-// followed by its value. Two models with equal keys are deepEqual.
+// Unambiguous even when names contain delimiters, quotes, or control characters.
 export function modelKey(model: VariableAssignments): string {
-  return Object.keys(model)
-    .sort()
-    .map((variableName) => `${variableName}=${model[variableName]}`)
-    .join(',');
+  return JSON.stringify(
+    Object.keys(model)
+      .sort()
+      .map((variableName) => [variableName, model[variableName]]),
+  );
 }
 
 // Return a copy of `models` sorted by `modelKey` so that enumeration order
@@ -50,19 +56,9 @@ export function sortModels(models: VariableAssignments[]): VariableAssignments[]
   });
 }
 
-// Order-insensitive model equality: key sets and values must match exactly.
+// Strict model equality, including values and prototypes, independent of key order.
 export function modelsEqual(a: VariableAssignments, b: VariableAssignments): boolean {
-  const aVariables = Object.keys(a).sort();
-  const bVariables = Object.keys(b).sort();
-  if (aVariables.length !== bVariables.length) {
-    return false;
-  }
-  for (let i = 0; i < aVariables.length; i += 1) {
-    if (aVariables[i] !== bVariables[i] || a[aVariables[i]] !== b[bVariables[i]]) {
-      return false;
-    }
-  }
-  return true;
+  return isDeepStrictEqual(a, b);
 }
 
 // Assert that two collections of models are equal ignoring order.
@@ -70,19 +66,26 @@ export function assertModelListsEqual(
   actual: VariableAssignments[],
   expected: VariableAssignments[],
 ): void {
-  assert.deepEqual(sortModels(actual), sortModels(expected));
+  assert.deepStrictEqual(sortModels(actual), sortModels(expected));
 }
 
 // Assert that `model` is a complete, well-shaped model of `expr`: its key set
 // is exactly the sorted named-variable set of `expr`, and every value is
-// Value.TRUE or Value.FALSE (no UNSET, no aux variables).
+// Value.TRUE or Value.FALSE (no UNSET, no aux variables). Public models retain
+// the ordinary object prototype and contain only enumerable own string keys.
 export function assertModelShape(model: VariableAssignments, expr: BooleanExpr): void {
+  assert.strictEqual(Object.getPrototypeOf(model), Object.prototype, 'ordinary model prototype');
   const expectedVariables = [...getVariables(expr)].sort();
   const actualVariables = Object.keys(model).sort();
-  assert.deepEqual(
+  assert.deepStrictEqual(
     actualVariables,
     expectedVariables,
     'model key set must equal the sorted named-variable set',
+  );
+  assert.strictEqual(
+    Reflect.ownKeys(model).length,
+    expectedVariables.length,
+    'model must have no hidden or symbol keys',
   );
   for (const variableName of expectedVariables) {
     const value = model[variableName];
@@ -257,13 +260,12 @@ export function enumerateAssignments(variables: readonly Variable[]): VariableAs
     );
   }
   const count = 2 ** sorted.length;
-  return Array.from({ length: count }, (_, pattern) => {
-    const assignment: VariableAssignments = {};
-    for (let bit = 0; bit < sorted.length; bit += 1) {
-      assignment[sorted[bit]] = (pattern >> bit) & 1 ? Value.TRUE : Value.FALSE;
-    }
-    return assignment;
-  });
+  // Define own data properties without invoking inherited setters such as __proto__.
+  return Array.from({ length: count }, (_, pattern) =>
+    Object.fromEntries(
+      sorted.map((variable, bit) => [variable, (pattern >> bit) & 1 ? Value.TRUE : Value.FALSE]),
+    ),
+  );
 }
 
 // Ground truth for cross-validation: every assignment over the formula's
@@ -309,13 +311,9 @@ function allExtensionsFalsify(
   base: VariableAssignments,
   unassigned: readonly Variable[],
 ): boolean {
-  return enumerateAssignments(unassigned).every((extension) => {
-    const total = { ...base };
-    for (const variable of unassigned) {
-      total[variable] = extension[variable];
-    }
-    return expressionValue(expr, total) === Value.FALSE;
-  });
+  return enumerateAssignments(unassigned).every(
+    (extension) => expressionValue(expr, { ...base, ...extension }) === Value.FALSE,
+  );
 }
 
 // Shrink a falsifying total assignment to a (usually smaller) contradictory
@@ -334,13 +332,11 @@ function shrinkContradiction(
       unassigned.add(variable);
     }
   }
-  const partial: VariableAssignments = {};
-  for (const variable of variables) {
-    if (!unassigned.has(variable)) {
-      partial[variable] = falsifier[variable];
-    }
-  }
-  return partial;
+  return Object.fromEntries(
+    variables
+      .filter((variable) => !unassigned.has(variable))
+      .map((variable) => [variable, falsifier[variable]]),
+  );
 }
 
 // Draw a random partial assignment over the named variables of `expr`.
@@ -362,11 +358,11 @@ export function randomAssumptions(
     const model = rng.pick(models);
     const maxCover = Math.min(options.maxAssumptions ?? variables.length, variables.length);
     const coverSize = rng.nextInt(maxCover + 1);
-    const partial: VariableAssignments = {};
-    for (const variable of shuffled(rng, variables).slice(0, coverSize)) {
-      partial[variable] = model[variable];
-    }
-    return partial;
+    return Object.fromEntries(
+      shuffled(rng, variables)
+        .slice(0, coverSize)
+        .map((variable) => [variable, model[variable]]),
+    );
   }
   const falsifiers = enumerateAssignments(variables).filter(
     (assignment) => expressionValue(expr, assignment) === Value.FALSE,

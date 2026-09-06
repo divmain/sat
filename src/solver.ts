@@ -1,11 +1,12 @@
-// Mutable solver state, Phase-1 occurrence-list unit propagation, scoped
-// pure-literal elimination, and the iterative chronological-backtracking
-// (DPLL) search loop. Phase 2 replaces only the propagation mechanism and the
-// conflict-handling branch — the public contract stays fixed.
+// Mutable solver state, MiniSat-style two-watched-literal unit propagation,
+// scoped pure-literal elimination, and iterative first-UIP CDCL search with
+// non-chronological backjumping, VSIDS branching, and phase saving.
+// propagate() keeps its original contract
+// (returns the conflicting Clause | null); the public contract stays fixed.
 // See Design § Solver Core State and Invariants and § Search: From DPLL to
 // CDCL.
 
-import { isNeg, litValue, neg, varOf } from './compile.js';
+import { isNeg, litValue, neg, normalizeClauseLits, varOf } from './compile.js';
 import type { Clause, CompiledCnf } from './compile.js';
 import { Value } from './expr.js';
 import type { Variable, VariableAssignments } from './expr.js';
@@ -49,18 +50,38 @@ export class Solver {
   readonly assigns: Int8Array;
   readonly level: Int32Array;
   readonly reason: Array<Clause | null>;
+  readonly activity: Float64Array;
+  readonly polarity: Int8Array;
   readonly trail: number[] = [];
   readonly trailLim: number[] = [];
   qhead = 0;
 
   readonly clauses: Clause[];
-  readonly occurs: Clause[][];
+  // Two-watched-literal lists: `watches[l]` holds every clause currently
+  // watching literal `l` — i.e. l is one of that clause's two watched
+  // literals, kept at clause.lits[0] or clause.lits[1] (the MiniSat in-place
+  // swap convention). Watch lists hold clause object references, never
+  // indices, so Phase-3 clause deletion stays safe by construction. Clause
+  // attachment and propagation's watch relocation preserve that identity.
+  readonly watches: Clause[][];
   readonly stats: SolverStats;
   readonly variablePriority: VariablePriority | undefined;
 
   private readonly cnf: CompiledCnf;
   private readonly enablePle: boolean;
   private readonly maxConflicts: number | undefined;
+  // Semantic clause identity must not depend on the mutable watch order.
+  private readonly clauseByKey = new Map<string, Clause>();
+  private readonly seen: Uint8Array;
+  private varInc = 1;
+  // Indexed binary max-heap, ordered by activity then LOWER variable index.
+  // Only named variables have positions; -1 means absent. Assignments made
+  // by propagation or the hook remain lazily in the heap until popped.
+  private readonly decisionHeap: number[];
+  private readonly heapPosition: Int32Array;
+  // An O(1) termination check avoids scanning all named variables at every
+  // decision, which would defeat the heap's logarithmic selection cost.
+  private unassignedNamed: number;
   private conflictsThisSolve = 0;
   private startupConflict: Clause | null = null;
   private startupConflictReported = false;
@@ -78,16 +99,46 @@ export class Solver {
     this.assigns = new Int8Array(cnf.numVars).fill(Value.UNSET);
     this.level = new Int32Array(cnf.numVars);
     this.reason = Array<Clause | null>(cnf.numVars).fill(null);
-    this.clauses = [...cnf.clauses];
-    this.occurs = Array.from({ length: cnf.numVars * 2 }, () => []);
+    this.seen = new Uint8Array(cnf.numVars);
+    this.activity = new Float64Array(cnf.numVars);
+    this.polarity = new Int8Array(cnf.numVars).fill(Value.FALSE);
+    this.decisionHeap = [];
+    this.heapPosition = new Int32Array(cnf.numNamedVars);
+    this.unassignedNamed = cnf.numNamedVars;
+    // All initial activities tie, so index order is already a valid heap.
+    for (let variable = 0; variable < cnf.numNamedVars; variable += 1) {
+      this.decisionHeap.push(variable);
+      this.heapPosition[variable] = variable;
+    }
+    this.clauses = [];
+    this.watches = Array.from({ length: cnf.numVars * 2 }, () => []);
     this.stats = opts.stats ?? emptyStats();
     this.variablePriority = opts.variablePriority;
     this.enablePle = opts.enablePle ?? false;
     this.maxConflicts = opts.maxConflicts;
 
     // Add clauses before assumptions. Units are deliberately absent from
-    // occurrence lists: they are asserted once at level zero instead.
-    for (const clause of this.clauses) {
+    // watch lists: they are asserted once at level zero instead. Every
+    // clause of length >= 2 watches its first two literals (positions 0 and
+    // 1); later propagation relocates a watch by swapping it into the
+    // falsified literal's slot. The empty clause short-circuits UNSAT.
+    for (const clause of cnf.clauses) {
+      const normalized = normalizeClauseLits(clause.lits);
+      if (normalized === null) {
+        continue;
+      }
+      const key = normalized.join(',');
+      if (this.clauseByKey.has(key)) {
+        continue;
+      }
+      // Compiled clauses are already normalized, but their watch positions
+      // may have moved in an earlier enumeration solver. Preserve that order
+      // (and object identity); use a sorted COPY only for the canonical key.
+      if (normalized.length !== clause.lits.length) {
+        clause.lits = normalized;
+      }
+      this.clauseByKey.set(key, clause);
+      this.clauses.push(clause);
       if (clause.lits.length === 0) {
         this.startupConflict ??= clause;
       } else if (clause.lits.length === 1) {
@@ -99,13 +150,7 @@ export class Solver {
           this.stats.propagations += 1;
         }
       } else {
-        for (const lit of clause.lits) {
-          const occurrenceList = this.occurs[lit];
-          if (occurrenceList === undefined) {
-            throw new Error(`clause contains out-of-range literal: ${lit}`);
-          }
-          occurrenceList.push(clause);
-        }
+        this.attachClause(clause);
       }
     }
 
@@ -126,6 +171,13 @@ export class Solver {
     }
 
     this.assigns[variable] = wanted;
+    // Save EVERY successful new assignment, including implications, root
+    // units/assumptions, PLE and learned assertions — not just decisions or
+    // cancelled assignments. A hook override becomes the latest phase too.
+    this.polarity[variable] = wanted;
+    if (variable < this.cnf.numNamedVars) {
+      this.unassignedNamed -= 1;
+    }
     this.level[variable] = this.trailLim.length;
     this.reason[variable] = reason;
     this.trail.push(lit);
@@ -142,51 +194,208 @@ export class Solver {
       return this.startupConflict;
     }
 
+    // Two-watched-literal propagation (MiniSat scheme). The trail is drained
+    // from `qhead`; dequeuing the (now true) literal `assignedLit` falsifies
+    // `neg(assignedLit)`, so only `watches[neg(assignedLit)]` — the clauses
+    // whose watched literal just became false — must be examined. Per clause:
+    //   1. Normalize the falsified watched literal into slot 1 (in-place
+    //      swap), so slot 0 holds the other watch.
+    //   2. Blocking-literal optimization: if the other watch is already
+    //      true, the clause is satisfied — nothing to do.
+    //   3. Scan slots 2.. for any literal that is not false; the first such
+    //      literal becomes the replacement watch (in-place swap: slot 1 takes
+    //      the candidate, the falsified literal moves into the vacated slot;
+    //      the clause is removed from this list and appended to the
+    //      candidate's list). If none exists, the clause is unit (enqueue the
+    //      other watch) or conflicting (return it).
+    // The list is mutated while iterated, so it is walked backwards: removing
+    // a clause swaps the current slot with the last element and pops, and
+    // every element above the current slot has already been examined, so no
+    // unexamined clause can be displaced. Clauses that are unit or that stay
+    // watching the falsified literal remain in the list.
     while (this.qhead < this.trail.length) {
       const assignedLit = this.trail[this.qhead];
       this.qhead += 1;
-      const occurrenceList = this.occurs[neg(assignedLit)];
-      if (occurrenceList === undefined) {
-        throw new Error(`missing occurrence list for literal: ${neg(assignedLit)}`);
+      const falseLit = neg(assignedLit);
+      const watchList = this.watches[falseLit];
+      if (watchList === undefined) {
+        throw new Error(`missing watch list for literal: ${falseLit}`);
       }
 
-      for (const clause of occurrenceList) {
-        let unitLit: number | null = null;
-        let unassignedCount = 0;
-        let satisfied = false;
-
-        for (const lit of clause.lits) {
-          const value = litValue(lit, this.assigns);
-          if (value === Value.TRUE) {
-            satisfied = true;
-            break;
-          }
-          if (value === Value.UNSET) {
-            unitLit = lit;
-            unassignedCount += 1;
-          }
+      for (let index = watchList.length - 1; index >= 0; index -= 1) {
+        const clause = watchList[index];
+        if (clause.lits[0] === falseLit) {
+          clause.lits[0] = clause.lits[1];
+          clause.lits[1] = falseLit;
         }
+        const otherWatch = clause.lits[0];
 
-        if (satisfied) {
+        if (litValue(otherWatch, this.assigns) === Value.TRUE) {
           continue;
         }
-        if (unassignedCount === 0) {
+
+        let relocated = false;
+        for (let k = 2; k < clause.lits.length; k += 1) {
+          const candidate = clause.lits[k];
+          if (litValue(candidate, this.assigns) !== Value.FALSE) {
+            clause.lits[1] = candidate;
+            clause.lits[k] = falseLit;
+            const candidateWatchList = this.watches[candidate];
+            if (candidateWatchList === undefined) {
+              throw new Error(`missing watch list for literal: ${candidate}`);
+            }
+            candidateWatchList.push(clause);
+            const lastIndex = watchList.length - 1;
+            watchList[index] = watchList[lastIndex];
+            watchList.pop();
+            relocated = true;
+            break;
+          }
+        }
+        if (relocated) {
+          continue;
+        }
+
+        if (litValue(otherWatch, this.assigns) === Value.FALSE) {
           this.recordConflict();
           return clause;
         }
-        if (unassignedCount === 1 && unitLit !== null) {
-          // The scan proved this variable unset, so a successful enqueue is a
-          // new implication and counts as one propagation.
-          if (!this.enqueue(unitLit, clause)) {
-            this.recordConflict();
-            return clause;
-          }
-          this.stats.propagations += 1;
+        if (!this.enqueue(otherWatch, clause)) {
+          this.recordConflict();
+          return clause;
         }
+        this.stats.propagations += 1;
       }
     }
 
     return null;
+  }
+
+  // Analyze before cancelling: reasons and levels describe an acyclic
+  // implication graph whose conflict clause is falsified. Walk ALL enqueued
+  // assignments backwards, including the tail not yet processed by propagate.
+  // A count of one current-level literal is the first UIP, even if its reason
+  // is non-null; resolving past it would instead learn a later/decision UIP.
+  analyze(conflict: Clause): { learned: Clause; backjumpLevel: number } {
+    const currentLevel = this.trailLim.length;
+    if (currentLevel === 0) {
+      throw new Error('conflict analysis requires a nonzero decision level');
+    }
+    if (!conflict.lits.every((lit) => litValue(lit, this.assigns) === Value.FALSE)) {
+      throw new Error('conflict analysis requires a falsified clause');
+    }
+
+    this.seen.fill(0);
+    const learnedLits: number[] = [];
+    let currentCount = 0;
+    let trailIndex = this.trail.length - 1;
+    let resolvedVariable = -1;
+    let clause = conflict;
+    let assertingLit: number;
+    while (true) {
+      // Usage count, not decayed activity: the conflict seed and every reason
+      // actually consumed get +1. The UIP's reason is NOT consumed or bumped.
+      clause.activity += 1;
+      for (const lit of clause.lits) {
+        const variable = varOf(lit);
+        // Reason watch slots can move, so skip the pivot by variable identity,
+        // never by assuming it occupies a particular position in its reason.
+        if (variable === resolvedVariable || this.seen[variable] !== 0) {
+          continue;
+        }
+        if (litValue(lit, this.assigns) !== Value.FALSE) {
+          throw new Error('conflict analysis reason antecedents must be falsified');
+        }
+        this.seen[variable] = 1;
+        // Once per seen variable, including root antecedents, auxiliaries
+        // and variables that disappear from the learned clause by resolution.
+        this.bumpVariableActivity(variable);
+        if (this.level[variable] === currentLevel) {
+          currentCount += 1;
+        } else {
+          // Retain level-zero antecedents too. Assumptions and PLE pins need
+          // not be base-formula consequences; dropping their literals would
+          // silently make the learned clause depend on that root context.
+          learnedLits.push(lit);
+        }
+      }
+      if (currentCount === 0) {
+        throw new Error('conflict must involve the current decision level');
+      }
+
+      let pivot: number | undefined;
+      while (trailIndex >= 0) {
+        const lit = this.trail[trailIndex--];
+        const variable = varOf(lit);
+        if (this.seen[variable] !== 0 && this.level[variable] === currentLevel) {
+          pivot = lit;
+          break;
+        }
+      }
+      if (pivot === undefined) {
+        throw new Error('conflict analysis could not find a current-level trail literal');
+      }
+      currentCount -= 1;
+      if (currentCount === 0) {
+        assertingLit = neg(pivot);
+        learnedLits.push(assertingLit);
+        break;
+      }
+      resolvedVariable = varOf(pivot);
+      const reason = this.reason[resolvedVariable];
+      if (reason === null) {
+        throw new Error('conflict analysis reached a decision before the first UIP');
+      }
+      clause = reason;
+    }
+
+    const normalized = normalizeClauseLits(learnedLits);
+    if (normalized === null || normalized.length === 0) {
+      throw new Error('first-UIP analysis must produce a nonempty, non-tautological clause');
+    }
+    const lits = this.orderAssertingLits(normalized, assertingLit);
+    // MiniSat's relative decay: future conflicts get a larger increment.
+    // This must follow ALL bumps (and any rescaling) for this conflict.
+    this.varInc *= 1 / 0.95;
+    return {
+      learned: { lits, learned: true, activity: 0, lbd: 0 },
+      backjumpLevel: lits.length === 1 ? 0 : this.level[varOf(lits[1])],
+    };
+  }
+
+  // Register a learned consequence, with its intended assertion in slot 0.
+  // Search registers analyze()'s result BEFORE cancellation, while the other
+  // literals' levels still identify the second watch. Return the canonical object:
+  // reasons, the database and watches must never use separate equal clauses.
+  // This does not enqueue, particularly not a learned unit at the OLD level.
+  addLearnedClause(learned: Clause): Clause {
+    const normalized = normalizeClauseLits(learned.lits);
+    if (normalized === null || normalized.length === 0) {
+      throw new Error('a learned clause must be nonempty and non-tautological');
+    }
+    const key = normalized.join(',');
+    const lits = this.orderAssertingLits(normalized, learned.lits[0]);
+    const existing = this.clauseByKey.get(key);
+    if (existing !== undefined) {
+      // An existing clause may watch different literals. Detach BEFORE
+      // reordering, then reattach once; originals/blocking clauses stay
+      // non-learned and retain their activity and object identity.
+      this.detachClause(existing);
+      existing.lits = lits;
+      this.attachClause(existing);
+      return existing;
+    }
+
+    learned.lits = lits;
+    learned.learned = true;
+    this.clauseByKey.set(key, learned);
+    this.clauses.push(learned);
+    this.attachClause(learned);
+    // Count new learned database entries, not duplicate rediscoveries. Until
+    // reduction exists, live and total increase together (units included).
+    this.stats.learnedClauses += 1;
+    this.stats.learnedClausesCurrent += 1;
+    return learned;
   }
 
   newDecisionLevel(): void {
@@ -210,9 +419,22 @@ export class Solver {
       this.assigns[variable] = Value.UNSET;
       this.level[variable] = 0;
       this.reason[variable] = null;
+      if (variable < this.cnf.numNamedVars) {
+        this.unassignedNamed += 1;
+        this.insertDecisionVariable(variable);
+      }
     }
     this.trail.length = cutoff;
     this.trailLim.length = targetLevel;
+    // Backtrack-safe by construction (the scheme's main payoff): watch lists
+    // are left untouched — a clause is only examined when one of its
+    // watched literals becomes false, and every dequeue after this point
+    // re-examines exactly the clauses whose watched literal (re-)becomes
+    // false. qhead is clamped to the truncated trail: entries below the
+    // cutoff that were never propagated before the backtracking are still
+    // pending and must be drained on the next propagate() call, while
+    // entries above the cutoff are gone (their watches need no bookkeeping
+    // because they were only examined at their previous dequeue).
     this.qhead = Math.min(this.qhead, cutoff);
     this.assertTrailInvariant();
   }
@@ -232,35 +454,36 @@ export class Solver {
       return false;
     }
 
-    // Phase 1 iterative chronological backtracking (Design § Search: From
-    // DPLL to CDCL). `flipped` and `decisionLits` grow alongside `trailLim`:
-    // entry i records the decision literal of decision level i+1 and whether
-    // that level's decision has already been tried in its other polarity. A
-    // conflict unwinds decision levels until one with an untried polarity is
-    // found (its negation becomes the flipped decision at the same level);
-    // exhausting every level means the level-0 prefix conflicts — UNSAT.
-    // Aux variables are never branched on; SAT is reached as soon as every
-    // named variable is assigned (Design § Termination condition).
-    const flipped: boolean[] = [];
-    const decisionLits: number[] = [];
+    // Iterative CDCL (Design § Search: From DPLL to CDCL). A conflict learns
+    // an asserting first-UIP clause and jumps directly to its assertion
+    // level, superseding chronological decision flipping. Aux variables are
+    // never branched on; SAT requires every named variable to be assigned.
     while (true) {
-      if (this.propagate() !== null) {
+      const conflict = this.propagate();
+      if (conflict !== null) {
         if (this.trailLim.length === 0) {
           this.permanentUnsat = true;
           return false;
         }
-        if (!this.retryDecisionLevel(flipped, decisionLits)) {
-          this.permanentUnsat = true;
-          return false;
+        const { learned, backjumpLevel } = this.analyze(conflict);
+        const assertingLit = learned.lits[0];
+        const registered = this.addLearnedClause(learned);
+        this.cancelUntil(backjumpLevel);
+        if (
+          this.assigns[varOf(assertingLit)] !== Value.UNSET ||
+          !this.enqueue(assertingLit, registered)
+        ) {
+          throw new Error(
+            'learned clause must assert a newly unassigned literal after backjumping',
+          );
         }
+        this.stats.propagations += 1;
       } else if (this.namedVariablesAssigned()) {
         return true;
       } else {
         const [variable, preferTrue] = this.pickDecision();
         const lit = variable * 2 + (preferTrue ? 0 : 1);
         this.newDecisionLevel();
-        flipped.push(false);
-        decisionLits.push(lit);
         this.enqueue(lit, null);
         this.stats.decisions += 1;
       }
@@ -281,6 +504,54 @@ export class Solver {
       entries.push([name, value]);
     }
     return Object.fromEntries(entries);
+  }
+
+  // The sorted canonical contents determine deterministic ties. The asserting
+  // literal occupies slot 0, and a maximum-other-level literal occupies slot
+  // 1, so undoing the assertion level later leaves two non-false watches.
+  private orderAssertingLits(normalized: number[], assertingLit: number): number[] {
+    const lits = [assertingLit, ...normalized.filter((lit) => lit !== assertingLit)];
+    if (lits.length >= 2) {
+      let otherWatch = 1;
+      for (let index = 2; index < lits.length; index += 1) {
+        if (this.level[varOf(lits[index])] > this.level[varOf(lits[otherWatch])]) {
+          otherWatch = index;
+        }
+      }
+      [lits[1], lits[otherWatch]] = [lits[otherWatch], lits[1]];
+    }
+    return lits;
+  }
+
+  private attachClause(clause: Clause): void {
+    if (clause.lits.length < 2) {
+      return;
+    }
+    const first = clause.lits[0];
+    const second = clause.lits[1];
+    const firstWatchList = this.watches[first];
+    const secondWatchList = this.watches[second];
+    if (firstWatchList === undefined || secondWatchList === undefined) {
+      throw new Error(`clause contains out-of-range watched literal: ${first}, ${second}`);
+    }
+    firstWatchList.push(clause);
+    secondWatchList.push(clause);
+  }
+
+  private detachClause(clause: Clause): void {
+    if (clause.lits.length < 2) {
+      return;
+    }
+    for (let slot = 0; slot < 2; slot += 1) {
+      const lit = clause.lits[slot];
+      const list = this.watches[lit];
+      const index = list?.indexOf(clause) ?? -1;
+      if (list === undefined || index < 0) {
+        throw new Error(`clause is missing its watch on literal: ${lit}`);
+      }
+      list[index] = list[list.length - 1];
+      list.pop();
+    }
   }
 
   private enqueueAssumptions(assumptions: VariableAssignments | undefined): void {
@@ -359,44 +630,13 @@ export class Solver {
   }
 
   private namedVariablesAssigned(): boolean {
-    for (let variable = 0; variable < this.cnf.numNamedVars; variable += 1) {
-      if (this.assigns[variable] === Value.UNSET) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  // Unwind from a conflict: pop decision levels until a level whose decision
-  // was not yet flipped is found, cancel it, and re-enter it with the
-  // negation of the old decision literal (marked flipped). Returns false when
-  // every decision level was exhausted — a level-0 conflict, i.e. UNSAT.
-  private retryDecisionLevel(flipped: boolean[], decisionLits: number[]): boolean {
-    while (this.trailLim.length > 0) {
-      const levelIndex = this.trailLim.length - 1;
-      const decisionLit = decisionLits[levelIndex];
-      const alreadyFlipped = flipped[levelIndex] === true;
-
-      this.cancelUntil(levelIndex);
-      if (!alreadyFlipped) {
-        const flippedLit = neg(decisionLit);
-        flipped[levelIndex] = true;
-        decisionLits[levelIndex] = flippedLit;
-        this.newDecisionLevel();
-        this.enqueue(flippedLit, null);
-        return true;
-      }
-
-      flipped.length = levelIndex;
-      decisionLits.length = levelIndex;
-    }
-    return false;
+    return this.unassignedNamed === 0;
   }
 
   // Select the next decision: the `variablePriority` hook first (named,
-  // unassigned, defensively revalidated), else the first unassigned named
-  // variable, FALSE-first to match the v1 default polarity (Design §
-  // Branching Heuristics). Aux variables are never decided.
+  // unassigned, defensively revalidated), else VSIDS with the saved phase.
+  // Initial activity ties and FALSE phases reproduce Phase 1's defaults.
+  // Aux variables are never decided (Design § Branching Heuristics).
   private pickDecision(): [number, boolean] {
     if (this.variablePriority !== undefined) {
       const unassigned: Variable[] = [];
@@ -410,15 +650,23 @@ export class Solver {
         if (value === Value.UNSET) {
           unassigned.push(name);
         } else {
-          currentAssignments[name] = value;
+          // Define an own data property even for names such as __proto__;
+          // assignment through Object.prototype's setter would lose that key.
+          Object.defineProperty(currentAssignments, name, {
+            value,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
         }
       }
 
       const picked = this.variablePriority(unassigned, currentAssignments);
-      if (picked !== null) {
+      if (Array.isArray(picked) && picked.length === 2) {
         const [name, preferTrue] = picked;
         const variable = this.cnf.nameToIndex.get(name);
         if (
+          typeof preferTrue === 'boolean' &&
           variable !== undefined &&
           variable < this.cnf.numNamedVars &&
           this.assigns[variable] === Value.UNSET
@@ -428,17 +676,113 @@ export class Solver {
       }
     }
 
-    for (let variable = 0; variable < this.cnf.numNamedVars; variable += 1) {
+    // Do not pop a fallback before consulting the hook: an accepted override
+    // must not accidentally discard some OTHER unassigned heap candidate.
+    while (this.decisionHeap.length > 0) {
+      const variable = this.popDecisionVariable();
       if (this.assigns[variable] === Value.UNSET) {
-        return [variable, false];
+        return [variable, this.polarity[variable] === Value.TRUE];
       }
     }
-    throw new Error('no unassigned named variable remains to decide');
+    throw new Error('decision heap exhausted with unassigned named variables');
+  }
+
+  private bumpVariableActivity(variable: number): void {
+    this.activity[variable] += this.varInc;
+    // The threshold check belongs IN the bump, not after analyze or decay:
+    // later bumps in this SAME conflict must use the rescaled increment.
+    if (this.activity[variable] > 1e100) {
+      for (let index = 0; index < this.activity.length; index += 1) {
+        this.activity[index] *= 1e-100;
+      }
+      this.varInc *= 1e-100;
+      // Positive scaling preserves score order mathematically, but floating
+      // rounding/underflow can introduce new ties. Restore index tie-breaking
+      // too; Floyd heapification is O(n), like the rescale itself.
+      for (let index = (this.decisionHeap.length >> 1) - 1; index >= 0; index -= 1) {
+        this.siftDecisionDown(index);
+      }
+    } else if (variable < this.heapPosition.length && this.heapPosition[variable] >= 0) {
+      this.siftDecisionUp(this.heapPosition[variable]);
+    }
+  }
+
+  private decisionPrecedes(left: number, right: number): boolean {
+    return (
+      this.activity[left] > this.activity[right] ||
+      (this.activity[left] === this.activity[right] && left < right)
+    );
+  }
+
+  private insertDecisionVariable(variable: number): void {
+    // A propagated/hook-assigned variable may still be present lazily. Do not
+    // duplicate it on cancellation; normal heap-selected decisions are absent.
+    if (this.heapPosition[variable] >= 0) {
+      return;
+    }
+    this.heapPosition[variable] = this.decisionHeap.length;
+    this.decisionHeap.push(variable);
+    this.siftDecisionUp(this.decisionHeap.length - 1);
+  }
+
+  private popDecisionVariable(): number {
+    const variable = this.decisionHeap[0];
+    const last = this.decisionHeap.pop();
+    this.heapPosition[variable] = -1;
+    if (last !== undefined && this.decisionHeap.length > 0) {
+      this.decisionHeap[0] = last;
+      this.heapPosition[last] = 0;
+      this.siftDecisionDown(0);
+    }
+    return variable;
+  }
+
+  private siftDecisionUp(index: number): void {
+    const variable = this.decisionHeap[index];
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+      const parentVariable = this.decisionHeap[parent];
+      if (!this.decisionPrecedes(variable, parentVariable)) {
+        break;
+      }
+      this.decisionHeap[index] = parentVariable;
+      this.heapPosition[parentVariable] = index;
+      index = parent;
+    }
+    this.decisionHeap[index] = variable;
+    this.heapPosition[variable] = index;
+  }
+
+  private siftDecisionDown(index: number): void {
+    const variable = this.decisionHeap[index];
+    while (index * 2 + 1 < this.decisionHeap.length) {
+      let child = index * 2 + 1;
+      if (
+        child + 1 < this.decisionHeap.length &&
+        this.decisionPrecedes(this.decisionHeap[child + 1], this.decisionHeap[child])
+      ) {
+        child += 1;
+      }
+      const childVariable = this.decisionHeap[child];
+      if (!this.decisionPrecedes(childVariable, variable)) {
+        break;
+      }
+      this.decisionHeap[index] = childVariable;
+      this.heapPosition[childVariable] = index;
+      index = child;
+    }
+    this.decisionHeap[index] = variable;
+    this.heapPosition[variable] = index;
   }
 
   private recordConflict(): void {
     this.stats.conflicts += 1;
     this.conflictsThisSolve += 1;
+    // Non-root conflicts decay at the END of analyze, after bumping. A
+    // terminal root conflict has no analysis/bump but still gets its decay.
+    if (this.trailLim.length === 0) {
+      this.varInc *= 1 / 0.95;
+    }
     if (this.maxConflicts !== undefined && this.conflictsThisSolve >= this.maxConflicts) {
       throw new Error(`maximum conflict budget exhausted (${this.maxConflicts})`);
     }
@@ -461,11 +805,18 @@ export class Solver {
         throw new Error('trail invariant violated: trail polarity must match assigns');
       }
     }
+    let unassignedNamed = 0;
     for (let variable = 0; variable < this.assigns.length; variable += 1) {
       const assigned = this.assigns[variable] !== Value.UNSET;
       if (assigned !== (seen[variable] === 1)) {
         throw new Error('trail invariant violated: assigns and trail membership must agree');
       }
+      if (!assigned && variable < this.cnf.numNamedVars) {
+        unassignedNamed += 1;
+      }
+    }
+    if (unassignedNamed !== this.unassignedNamed) {
+      throw new Error('named assignment count must agree with assigns');
     }
   }
 }

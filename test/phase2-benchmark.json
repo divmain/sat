@@ -1,0 +1,223 @@
+{
+  "reference": {
+    "commit": "7037f823d192dc3cf2dc9119c8063781e143113c",
+    "path": "test/baseline.json",
+    "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+    "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+  },
+  "implementation": {
+    "head": "7037f823d192dc3cf2dc9119c8063781e143113c",
+    "sourceSha256": {
+      "src/compile.ts": "d793bdb15ed83abf39bb978a47bd36694b7096c315137567a54dff0948afb42a",
+      "src/expr.ts": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4",
+      "src/index.ts": "71a0913e46b2d7e127498330640f5fb51d34a791104d8d40d441df74216f5720",
+      "src/solver.ts": "cee5031d304b5dacd9d8ed0a4de0b8908c4bd1ae5edd5f528aca79c0c85a12a1",
+      "test/bench.ts": "2a0ed2a6c7c025c339b13f88c27111b8ee8e0370a7aebf98ae0381002b5c9ede",
+      "test/bench-comparison.ts": "5ef56ef60bc2eaa01eac9fc8464892d1d073e8d6c492fe6c5c40bd21e0ebd334",
+      "test/helpers.ts": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39",
+      "test/php-regressions.ts": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a",
+      "package.json": "b36a0615f82d9cf7de4c243e3e360bb2eb6ebce3bb4bb351c0913122fd8efe45",
+      "package-lock.json": "a702b59be534096c07b2007347c1b5aac02cb1e801f1700ed7e94d8170699d42",
+      "tsconfig.json": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+    },
+    "node": "v26.8.1",
+    "nodeEnv": null
+  },
+  "notes": [
+    "Manual review only: no automated speedup gate or task-completion claim.",
+    "Owner-approved disposition: task-884f note 2026-09-06T01:56:58Z supersedes the unsupported orders-of-magnitude PHP and Phase-1-infeasibility requirements. Future substantial algorithmic improvements are tracked by independent objective objv-b2ca, which is not achieved by this benchmark or by completing plan-7748.",
+    "Current task-884f performance acceptance requires authentic reproducible comparisons with honest actual numbers, learning on PHP rows, hypergraph parity at 2 decisions/16 propagations/0 conflicts, and PHP(7,6)/PHP(8,7) UNSAT within the fixed 10x-padded conflict caps. All other correctness, property, tooling, and public API requirements remain binding.",
+    "Phase 1 contains six completed rows, no budget-exhausted rows, and no PHP(7,6) or PHP(8,7) measurements. Missing data is not capped, timed out, or an infinite improvement.",
+    "The original six rows retain maxConflicts=200000 and the original generators. Random 3-SAT uses 20 variables, 85 clauses, and seeds 42/43/44.",
+    "Every run uses fresh compilation, the default brancher (no variablePriority hook), and enablePle=true. Budget exhaustion throws; no failure is recorded as UNSAT.",
+    "The larger PHP caps are pinned at exactly 10x once-at-implementation observations (723 and 3627 conflicts). UNSAT follows independently from the pigeonhole principle. Passing these caps proves only those budgets, not Phase-1 infeasibility or orders-of-magnitude improvement.",
+    "Ratios are Phase1/Phase2, rounded to two decimals, not wall-time speedups. For decisions/propagations/conflicts, >1 means fewer current counts; <1 means higher current counts (regression). A zero denominator is n/a, with 0/0 explicitly labelled parity.",
+    "Learning counters report activity, not speedup: higher learnedClauses can witness learning. Phase 1 did not record learnedClausesCurrent; it remains missing rather than an invented zero.",
+    "HEAD is context only. sourceSha256 identifies actual working-tree bytes, including uncommitted code; fixtureSha256 hashes UTF-8 JSON.stringify({ expr, assumptions }) before compilation.",
+    "The working-tree test/baseline.json and previous Phase-2 reports are neither read as references nor overwritten as baselines. Only the separate Phase-2 reports are regenerated."
+  ],
+  "entries": [
+    {
+      "name": "hypergraph",
+      "fixture": "hypergraphFormula()",
+      "fixtureSha256": "c6ee32aee69441141a2e6142ab40cb690a62a3c52f92df6d18ff9d9b7d550939",
+      "assumptions": {
+        "h": 1
+      },
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0,
+        "learnedClausesCurrent": 0
+      }
+    },
+    {
+      "name": "php_5_4",
+      "fixture": "cnfToExpr(phpCnf(5, 4))",
+      "fixtureSha256": "b6d3c281d6ded8e2bdf998bd053999015a26fe1b4e16d023d9dd626bc8938022",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "UNSAT",
+      "phase1": {
+        "decisions": 51,
+        "propagations": 394,
+        "conflicts": 52,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 38,
+        "propagations": 301,
+        "conflicts": 28,
+        "restarts": 0,
+        "learnedClauses": 27,
+        "learnedClausesCurrent": 27
+      }
+    },
+    {
+      "name": "php_6_5",
+      "fixture": "cnfToExpr(phpCnf(6, 5))",
+      "fixtureSha256": "793fdee5ff415d6043de46c9f4a20ed9d001d5f6dc8ad4a5bcc1d2d5a7ce7dd0",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "UNSAT",
+      "phase1": {
+        "decisions": 374,
+        "propagations": 3127,
+        "conflicts": 375,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 195,
+        "propagations": 1791,
+        "conflicts": 147,
+        "restarts": 0,
+        "learnedClauses": 146,
+        "learnedClausesCurrent": 146
+      }
+    },
+    {
+      "name": "sat3_seed42",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(42), 20, 85))",
+      "fixtureSha256": "9b46c4325819ab08b81fb695b5c5e7c356f976dcdad494ecdf52459d76df9c0d",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 22,
+        "propagations": 149,
+        "conflicts": 20,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 16,
+        "propagations": 137,
+        "conflicts": 13,
+        "restarts": 0,
+        "learnedClauses": 13,
+        "learnedClausesCurrent": 13
+      }
+    },
+    {
+      "name": "sat3_seed43",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(43), 20, 85))",
+      "fixtureSha256": "e2c45ccf7fb48ee7cee554f94c1c9d38ffeaef6206d0bd09b676266a2aa481a6",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 2,
+        "learnedClausesCurrent": 2
+      }
+    },
+    {
+      "name": "sat3_seed44",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(44), 20, 85))",
+      "fixtureSha256": "3f8b1650526921b5bb6bf90ecb1d4ee923e9a71f2e2c856fa12dca5b7d8e0f5f",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 10,
+        "propagations": 40,
+        "conflicts": 3,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 7,
+        "propagations": 24,
+        "conflicts": 1,
+        "restarts": 0,
+        "learnedClauses": 1,
+        "learnedClausesCurrent": 1
+      }
+    },
+    {
+      "name": "php_7_6",
+      "fixture": "cnfToExpr(phpCnf(7, 6))",
+      "fixtureSha256": "aa2947064f12923f17f637f08d0a0d7e4997f7a786910aa2b2654108c2676ebe",
+      "assumptions": {},
+      "maxConflicts": 7230,
+      "calibratedConflicts": 723,
+      "verdict": "UNSAT",
+      "phase1": null,
+      "phase2": {
+        "decisions": 865,
+        "propagations": 10038,
+        "conflicts": 723,
+        "restarts": 0,
+        "learnedClauses": 722,
+        "learnedClausesCurrent": 722
+      }
+    },
+    {
+      "name": "php_8_7",
+      "fixture": "cnfToExpr(phpCnf(8, 7))",
+      "fixtureSha256": "0c04b00e2d37b97c254308da2a7f4703b2a8dc552f64692ec507a31b15f272cc",
+      "assumptions": {},
+      "maxConflicts": 36270,
+      "calibratedConflicts": 3627,
+      "verdict": "UNSAT",
+      "phase1": null,
+      "phase2": {
+        "decisions": 4067,
+        "propagations": 54184,
+        "conflicts": 3627,
+        "restarts": 0,
+        "learnedClauses": 3626,
+        "learnedClausesCurrent": 3626
+      }
+    }
+  ]
+}

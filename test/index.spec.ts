@@ -41,8 +41,8 @@ import {
 // The pinned global-sweep PLE assigns the whole chain except the two
 // zero-occurrence don't-cares e and n (every clause mentioning them is
 // satisfied before they could become pure), so the search loop decides those
-// two FALSE-first. Design § Testing predicted zero decisions; the Phase-1
-// implementation's actual fixpoint leaves exactly these two.
+// two FALSE-first. The owner-approved Design § Testing correction in
+// task-f746 now requires this actual Phase-1 value, not the former zero claim.
 const HYPERGRAPH_DECISIONS = 2;
 
 // v1's `selectNextVar` ported to the v2 `variablePriority` contract per
@@ -221,11 +221,16 @@ describe('getSolution', () => {
 
       it('honors a domain variablePriority with equal forced subset', () => {
         const defaultModel = getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE } });
+        const candidates: Variable[][] = [];
         const customModel = getSolution(hypergraphFormula(), {
           assumptions: { h: Value.TRUE },
-          variablePriority: visitOrder,
+          variablePriority: (unassigned, assignments) => {
+            candidates.push([...unassigned]);
+            return visitOrder(unassigned, assignments);
+          },
         });
 
+        assert.deepEqual(candidates, [['e', 'n'], ['n']], 'two ordinary completion decisions');
         assert.ok(defaultModel !== null);
         assert.ok(customModel !== null);
         assertModelShape(customModel, hypergraphFormula());
@@ -310,8 +315,8 @@ describe('getSolution', () => {
 
       // Gate-symmetric xor: PLE is inert and at least one decision is
       // unavoidable, so the hook fires exactly once — at the single decision
-      // point (the hypergraph is unsuitable here: PLE + propagation do nearly
-      // all the work, and hook cadence in v1 was "once per recursion node").
+      // point. Keep this PLE-inert cadence witness in addition to the two
+      // ordinary don't-care decisions on the hypergraph.
       const model = getSolution(xor('a', 'b'), { variablePriority: hook });
       assert.strictEqual(hookCalls, 1);
       assert.ok(model !== null);
@@ -460,15 +465,15 @@ describe('getAllSolutions', () => {
       // and(): the empty conjunction has one model, {}; the blocking clause
       // over zero named variables is the empty clause — terminal UNSAT for
       // enumeration after the first iteration.
-      assert.deepEqual(getAllSolutions(and()), [{}]);
+      assert.deepStrictEqual(getAllSolutions(and()), [{}]);
       // or(): the empty disjunction compiles to the empty clause.
-      assert.deepEqual(getAllSolutions(or()), []);
+      assert.deepStrictEqual(getAllSolutions(or()), []);
     });
 
     it('returns [] immediately for a levelZeroUnsat formula', () => {
       // and(or(), 'a') compiles to the empty clause plus a unit clause:
       // levelZeroUnsat short-circuits before any solve.
-      assert.deepEqual(getAllSolutions(and(or(), 'a')), []);
+      assert.deepStrictEqual(getAllSolutions(and(or(), 'a')), []);
     });
 
     it('enumerates a 40-variable chain without an array-length cap', () => {
@@ -522,7 +527,7 @@ describe('getAllSolutions', () => {
     });
 
     it('returns [] when the assumptions contradict the formula', () => {
-      assert.deepEqual(getAllSolutions(and('a'), { assumptions: { a: Value.FALSE } }), []);
+      assert.deepStrictEqual(getAllSolutions(and('a'), { assumptions: { a: Value.FALSE } }), []);
     });
   });
 
@@ -538,17 +543,17 @@ describe('getAllSolutions', () => {
       };
       const models = getAllSolutions(or('a', 'b'), { stats });
       assert.strictEqual(models.length, 3);
-      // Calibrated on the Phase-1 implementation: three successful solves
-      // (1 decision + 2 backtracking decisions across iterations) plus the
-      // fourth solve that reports UNSAT, all accumulated into one object
-      // (the out-param is zeroed once at entry, then shared across every
-      // fresh per-model solver).
+      // Four disposable solves: (decisions, propagations, conflicts, learned)
+      // = (1,1,0,0), (2,2,1,1), (1,3,1,1), (1,3,2,1). Each of the last
+      // three derives/asserts a root unit instead of flipping a decision;
+      // the fourth ends in a root conflict. All counters accumulate because
+      // the out-param is zeroed only once and shared by the fresh solvers.
       assert.strictEqual(stats.decisions, 5);
-      assert.strictEqual(stats.propagations, 6);
+      assert.strictEqual(stats.propagations, 9);
       assert.strictEqual(stats.conflicts, 4);
       assert.strictEqual(stats.restarts, 0);
-      assert.strictEqual(stats.learnedClauses, 0);
-      assert.strictEqual(stats.learnedClausesCurrent, 0);
+      assert.strictEqual(stats.learnedClauses, 3);
+      assert.strictEqual(stats.learnedClausesCurrent, 3);
     });
   });
 

@@ -3,12 +3,16 @@
 // asserting exact parsed clause contents on hand-checkable inputs, the
 // generators by their exact clause structure and determinism, and the whole
 // pipeline (generator → serialized DIMACS → parser → BooleanExpr → solver)
-// by end-to-end verdicts: pigeon-hole PHP(6,5) UNSAT, a satisfiable prereq
-// chain SAT with n+1 enumeration, and seeded random 3-CNF.
+// by end-to-end verdicts: pigeon-hole UNSAT (including conflict-bounded
+// PHP(7,6)/PHP(8,7)), a satisfiable prereq chain SAT with n+1 enumeration,
+// and seeded random 3-CNF.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { getAllSolutions, getSolution, Value } from '../src';
+import { compile } from '../src/compile';
+import { Solver } from '../src/solver';
+import type { SolverStats } from '../src/solver';
 import {
   assertModelListsEqual,
   assertModelShape,
@@ -23,6 +27,7 @@ import {
   referenceModels,
 } from './helpers';
 import type { DimacsCnf } from './helpers';
+import { PHP_REGRESSIONS } from './php-regressions';
 
 // ---------------------------------------------------------------------------
 // Parser correctness on hand-checkable inputs
@@ -176,9 +181,43 @@ describe('end-to-end DIMACS verdicts', () => {
     assert.strictEqual(getSolution(throughDimacs(phpCnf(5, 4))), null);
   });
 
-  it('proves PHP(6,5) UNSAT', () => {
-    assert.strictEqual(getSolution(throughDimacs(phpCnf(6, 5))), null);
+  it('proves PHP(6,5) UNSAT with clause learning', () => {
+    const stats = {
+      decisions: 0,
+      propagations: 0,
+      conflicts: 0,
+      restarts: 0,
+      learnedClauses: 0,
+      learnedClausesCurrent: 0,
+    };
+    assert.strictEqual(getSolution(throughDimacs(phpCnf(6, 5)), { stats }), null);
+    assert.ok(stats.learnedClauses > 0, 'learning, not merely conflicts, distinguishes CDCL');
   });
+
+  for (const { pigeons, holes, calibratedConflicts, maxConflicts } of PHP_REGRESSIONS) {
+    it(`proves PHP(${pigeons},${holes}) UNSAT reproducibly below ${maxConflicts} conflicts`, () => {
+      // Independent verdict: each pigeon must occupy a hole, and the binary
+      // clauses prohibit shared holes. More pigeons than holes is impossible;
+      // no prior solver result supplies the expected UNSAT answer.
+      assert.ok(pigeons > holes);
+      assert.strictEqual(maxConflicts, calibratedConflicts * 10, 'fixed 10x calibration padding');
+      const runs: SolverStats[] = [];
+      for (let run = 0; run < 2; run += 1) {
+        // Recompile for each fresh solver: watched clause literal order and
+        // clause activity are mutable. Mirror single-shot PLE, without a hook.
+        const solver = new Solver(compile(throughDimacs(phpCnf(pigeons, holes))), {
+          enablePle: true,
+          maxConflicts,
+        });
+        // A budget exception must fail this test, never masquerade as UNSAT.
+        assert.strictEqual(solver.solve(), false);
+        assert.ok(solver.stats.conflicts < maxConflicts, 'UNSAT proof finishes before exhaustion');
+        assert.ok(solver.stats.learnedClauses > 0, 'clause learning must actually engage');
+        runs.push({ ...solver.stats });
+      }
+      assert.deepStrictEqual(runs[1], runs[0], 'fresh default solves have identical counters');
+    });
+  }
 
   it('finds a model for a satisfiable prereq chain and enumerates all n+1 models', () => {
     const expr = throughDimacs(prereqChainCnf(8));

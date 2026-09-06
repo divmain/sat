@@ -1,9 +1,11 @@
 // Seeded cross-validation of the public solvers against the naive reference
 // enumerator (Design § Testing and Benchmarking Strategy). The full harness
-// (task-92a3): >= 300 seeded formulas over <= 8 named variables covering all
-// five constructors, with
+// (task-884f): 512 seeds per variable pool (original a-h plus arbitrary string
+// names), over <= 8 named variables covering all five constructors, with
 //   - the verdict triangle (getSolution sat ⟺ getAllSolutions nonempty ⟺
 //     reference count > 0),
+//   - verdict stability over three fresh solves of the same expression and
+//     assumption subset, with every returned single model reference-checked,
 //   - exact model-count equality against the naive reference enumerator,
 //   - per-model shape (key set / no-UNSET) and reference-validity checks with
 //     duplicate detection,
@@ -29,7 +31,6 @@ import {
   randomAssumptions,
   randomFormula,
   referenceModels,
-  sortModels,
 } from './helpers';
 
 // The fixed battery from the task-2 reference-enumerator harness
@@ -45,10 +46,27 @@ const battery: ReadonlyArray<readonly [string, BooleanExpr]> = [
   ["xor('a','b')", xor('a', 'b')],
 ];
 
-// ≥ 300 seeded formulas (Design: "≥ 300–500 formulas"), over ≤ 8 named
+// ≥ 500 seeded formulas (the Phase-2 gate), over ≤ 8 named
 // variables so the naive reference enumerator's 2^k bound stays at 256 max.
-const SEED_COUNT = 320;
+const SEED_COUNT = 512;
+const REPEATED_SOLVES = 3;
 const FORMULA_OPTIONS = { maxDepth: 3, maxWidth: 4, maxVariables: 8 };
+const VARIABLE_POOLS = [
+  { label: 'original a-h', variables: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] },
+  {
+    label: 'arbitrary string names',
+    variables: [
+      '__proto__',
+      'constructor',
+      'toString',
+      'hasOwnProperty',
+      '',
+      'a=0,b',
+      '0',
+      'quote"\\\n\u03bb',
+    ],
+  },
+];
 
 // Per-formula assumption draws: 2 consistent + 2 contradictory subsets,
 // drawn from PRNG instances seeded deterministically per (formula, draw).
@@ -57,9 +75,78 @@ const ASSUMPTION_SEED_BASE = 100_000;
 const MAX_CONSISTENT_ASSUMPTIONS = 3;
 
 // True when `partial` is a subset of `model` (every assigned variable of the
-// partial matches the model's value).
+// partial matches the model's value). UNSET is ignored per the public contract.
 function modelExtends(model: VariableAssignments, partial: VariableAssignments): boolean {
-  return Object.keys(partial).every((key) => model[key] === partial[key]);
+  return Object.entries(partial).every(
+    ([key, value]) => Object.hasOwn(model, key) && (value === Value.UNSET || model[key] === value),
+  );
+}
+
+// Validate supplied results without calling a solver. Both enumeration paths
+// use this oracle, and the negative tests below exercise it with invalid models.
+function assertEnumeratedModels(
+  label: string,
+  expr: BooleanExpr,
+  actual: VariableAssignments[],
+  expected: VariableAssignments[],
+  assumptions: VariableAssignments = {},
+): void {
+  assert.strictEqual(actual.length, expected.length, `${label} model count`);
+  for (const [index, model] of actual.entries()) {
+    assertModelShape(model, expr);
+    assert.strictEqual(
+      expressionValue(expr, model),
+      Value.TRUE,
+      `${label} model ${index} must satisfy the reference formula`,
+    );
+    // Check actual results directly, independently of the reference filtering predicate.
+    for (const [name, value] of Object.entries(assumptions)) {
+      assert.ok(
+        Object.hasOwn(model, name),
+        `${label} model ${index} must own ${JSON.stringify(name)}`,
+      );
+      if (value !== Value.UNSET) {
+        assert.strictEqual(
+          model[name],
+          value,
+          `${label} model ${index} must extend assumption ${JSON.stringify(name)}`,
+        );
+      }
+    }
+  }
+  const keys = actual.map(modelKey);
+  assert.strictEqual(new Set(keys).size, keys.length, `${label} duplicate models`);
+  assertModelListsEqual(actual, expected);
+}
+
+// Repeat the SAME input objects, not new random draws. The expected verdict
+// comes from the independent reference before any solver call; agreeing with
+// an earlier run alone would let a consistently wrong answer pass.
+function assertStableSolution(
+  label: string,
+  expr: BooleanExpr,
+  expectedSat: boolean,
+  assumptions: VariableAssignments = {},
+): void {
+  let firstVerdict: boolean | undefined;
+  for (let run = 0; run < REPEATED_SOLVES; run += 1) {
+    const model = getSolution(expr, { assumptions });
+    const sat = model !== null;
+    assert.strictEqual(sat, expectedSat, `${label} solve ${run} reference verdict`);
+    if (run === 0) {
+      firstVerdict = sat;
+    } else {
+      assert.strictEqual(sat, firstVerdict, `${label} solve ${run} repeated verdict`);
+    }
+    if (model !== null) {
+      assertModelShape(model, expr);
+      assert.strictEqual(expressionValue(expr, model), Value.TRUE, `${label} solve ${run} model`);
+      assert.ok(
+        modelExtends(model, assumptions),
+        `${label} solve ${run} model must extend the assumptions`,
+      );
+    }
+  }
 }
 
 // The no-assumption cross-check battery for one formula: verdict triangle,
@@ -69,29 +156,15 @@ const assertEnumerationAgainstReference: (label: string, expr: BooleanExpr) => v
   label,
   expr,
 ) => {
-  const actual = getAllSolutions(expr);
   const reference = referenceModels(expr);
+  assertStableSolution(label, expr, reference.length > 0);
+  const actual = getAllSolutions(expr);
 
   // Verdict triangle: getSolution sat ⟺ getAllSolutions nonempty ⟺ the
   // reference enumerates at least one model.
-  assert.strictEqual(
-    getSolution(expr) !== null,
-    reference.length > 0,
-    `${label} getSolution verdict`,
-  );
   assert.strictEqual(actual.length > 0, reference.length > 0, `${label} enumeration verdict`);
 
-  // Exact model-count equality against the naive reference enumerator.
-  assert.strictEqual(actual.length, reference.length, `${label} model count`);
-  // No duplicates (blocking clauses must exclude every already-returned model).
-  const keys = actual.map(modelKey);
-  assert.strictEqual(new Set(keys).size, keys.length, `${label} duplicate models`);
-  // Per-model shape (key set exactly the named variables, no UNSET) and
-  // reference validity.
-  for (const model of actual) {
-    assertModelShape(model, expr);
-    assert.strictEqual(expressionValue(expr, model), Value.TRUE, `${label} returned model`);
-  }
+  assertEnumeratedModels(label, expr, actual, reference);
 };
 
 // The assumption cross-check for one partial assignment: `getSolution` under
@@ -105,27 +178,90 @@ const assertAssumptionsAgainstReference: (
   reference: VariableAssignments[],
 ) => void = (label, expr, partial, reference) => {
   const extendingReference = reference.filter((model) => modelExtends(model, partial));
-  const model = getSolution(expr, { assumptions: partial });
-
-  assert.strictEqual(model !== null, extendingReference.length > 0, `${label} assumption verdict`);
-  if (model !== null) {
-    assert.ok(modelExtends(model, partial), `${label} returned model must extend the assumptions`);
-    assertModelShape(model, expr);
-    assert.strictEqual(expressionValue(expr, model), Value.TRUE, `${label} assumed model`);
-  }
+  assertStableSolution(label, expr, extendingReference.length > 0, partial);
 
   const enumerated = getAllSolutions(expr, { assumptions: partial });
-  assert.strictEqual(
-    enumerated.length,
-    extendingReference.length,
-    `${label} assumed enumeration count`,
-  );
-  assert.deepEqual(
-    sortModels(enumerated),
-    sortModels(extendingReference),
-    `${label} assumed enumeration set`,
-  );
+  assertEnumeratedModels(label, expr, enumerated, extendingReference, partial);
 };
+
+describe('enumeration contract oracle', () => {
+  const expr = or('a', 'b');
+  const assumptions = { a: Value.TRUE };
+  // Hand-computed, not obtained from either production solver or referenceModels.
+  const expected: VariableAssignments[] = [
+    { a: Value.TRUE, b: Value.FALSE },
+    { a: Value.TRUE, b: Value.TRUE },
+  ];
+
+  it('accepts numeric models in either order and ignores UNSET assumptions', () => {
+    assertEnumeratedModels('valid', expr, [...expected].reverse(), expected, assumptions);
+    assertEnumeratedModels('UNSET', not('a'), [{ a: Value.FALSE }], [{ a: Value.FALSE }], {
+      a: Value.UNSET,
+    });
+  });
+
+  it('reference extension filtering requires strict own values for arbitrary names', () => {
+    for (const name of VARIABLE_POOLS[1].variables) {
+      const partial = { [name]: Value.TRUE };
+      const booleanValue = { [name]: true } as unknown as VariableAssignments;
+      assert.strictEqual(modelExtends(partial, partial), true);
+      assert.strictEqual(modelExtends({ [name]: Value.FALSE }, partial), false);
+      assert.strictEqual(modelExtends({}, partial), false);
+      assert.strictEqual(modelExtends(Object.create(partial), partial), false);
+      assert.strictEqual(modelExtends(booleanValue, partial), false);
+      assert.strictEqual(modelExtends(partial, booleanValue), false);
+      assert.strictEqual(modelExtends(partial, { [name]: Value.UNSET }), true);
+    }
+  });
+
+  const invalidModels: ReadonlyArray<readonly [string, unknown, RegExp]> = [
+    ['boolean TRUE', { a: true, b: Value.FALSE }, /every model value must be TRUE or FALSE/],
+    ['boolean FALSE', { a: Value.TRUE, b: false }, /every model value must be TRUE or FALSE/],
+    ['UNSET', { a: Value.TRUE, b: Value.UNSET }, /every model value must be TRUE or FALSE/],
+    ['a missing key', { a: Value.TRUE }, /model key set must equal/],
+    [
+      'an extra key',
+      { a: Value.TRUE, b: Value.FALSE, extra: Value.TRUE },
+      /model key set must equal/,
+    ],
+    [
+      'a falsifying model',
+      { a: Value.FALSE, b: Value.FALSE },
+      /must satisfy the reference formula/,
+    ],
+    ['an assumption violation', { a: Value.FALSE, b: Value.TRUE }, /must extend assumption "a"/],
+  ];
+  for (const [label, invalid, message] of invalidModels) {
+    it(`rejects ${label} at every enumeration position`, () => {
+      for (let index = 0; index < expected.length; index += 1) {
+        const actual = [...expected];
+        actual[index] = invalid as VariableAssignments;
+        assert.throws(() => assertEnumeratedModels(label, expr, actual, expected, assumptions), {
+          name: 'AssertionError',
+          message,
+        });
+      }
+    });
+  }
+
+  it('rejects incorrect counts and duplicate models', () => {
+    assert.throws(
+      () => assertEnumeratedModels('count', expr, expected.slice(1), expected, assumptions),
+      /model count/,
+    );
+    assert.throws(
+      () =>
+        assertEnumeratedModels(
+          'duplicates',
+          expr,
+          [expected[0], expected[0]],
+          expected,
+          assumptions,
+        ),
+      /duplicate models/,
+    );
+  });
+});
 
 describe('getAllSolutions cross-validation against the reference enumerator', () => {
   describe('fixed battery', () => {
@@ -162,7 +298,7 @@ describe('getAllSolutions cross-validation against the reference enumerator', ()
       for (const [label, expr] of battery) {
         const expected = expectedByLabel.get(label);
         assert.ok(expected !== undefined, `missing expectation for ${label}`);
-        assertModelListsEqual(getAllSolutions(expr), expected);
+        assertEnumeratedModels(label, expr, getAllSolutions(expr), expected);
       }
     });
 
@@ -171,99 +307,174 @@ describe('getAllSolutions cross-validation against the reference enumerator', ()
         assertEnumerationAgainstReference(label, expr);
       }
     });
+
+    for (const name of VARIABLE_POOLS[1].variables) {
+      it(`preserves the public model and assumption contracts for ${JSON.stringify(name)}`, () => {
+        for (const required of [Value.FALSE, Value.TRUE]) {
+          const expr = required === Value.TRUE ? and(name) : not(name);
+          const expected = { [name]: required };
+          for (const assumptions of [{}, expected, { [name]: Value.UNSET }]) {
+            const model = getSolution(expr, { assumptions });
+            assert.deepStrictEqual(model, expected);
+            assertModelShape(model, expr);
+            assertEnumeratedModels(
+              name,
+              expr,
+              getAllSolutions(expr, { assumptions }),
+              [expected],
+              assumptions,
+            );
+          }
+          const assumptions = { [name]: required === Value.TRUE ? Value.FALSE : Value.TRUE };
+          assert.strictEqual(getSolution(expr, { assumptions }), null);
+          assertEnumeratedModels(
+            name,
+            expr,
+            getAllSolutions(expr, { assumptions }),
+            [],
+            assumptions,
+          );
+        }
+        const contradiction = and(name, not(name));
+        assert.strictEqual(getSolution(contradiction), null);
+        assertEnumeratedModels(name, contradiction, getAllSolutions(contradiction), []);
+      });
+    }
   });
 
-  describe('seeded random formulas (>= 300)', () => {
-    it('matches the reference verdict triangle and exact counts on every seeded formula', () => {
-      const kindsSeen = new Set<string>();
-      for (let seed = 0; seed < SEED_COUNT; seed += 1) {
-        const rng = mulberry32(seed);
-        const { expr, kinds } = randomFormula(rng, FORMULA_OPTIONS);
-        for (const kind of kinds) {
-          kindsSeen.add(kind);
+  for (const { label, variables } of VARIABLE_POOLS) {
+    const options = { ...FORMULA_OPTIONS, variables };
+    describe(`seeded random formulas (${label}; 512; >= 500)`, () => {
+      it('matches the reference triangle, exact counts, and repeated verdicts on every formula', () => {
+        const kindsSeen = new Set<string>();
+        const formulasSeen = new Set<string>();
+        const variablesSeen = new Set<string>();
+        for (let seed = 0; seed < SEED_COUNT; seed += 1) {
+          const rng = mulberry32(seed);
+          const { expr, kinds } = randomFormula(rng, options);
+          formulasSeen.add(JSON.stringify(expr));
+          for (const name of getVariables(expr)) {
+            variablesSeen.add(name);
+          }
+          for (const kind of kinds) {
+            kindsSeen.add(kind);
+          }
+          assertEnumerationAgainstReference(`${label} seed ${seed}`, expr);
         }
-        assertEnumerationAgainstReference(`seed ${seed}`, expr);
-      }
-      // the fixed-seed stream must exercise all five constructors
-      assert.deepEqual([...kindsSeen].sort(), ['and', 'implies', 'not', 'or', 'xor']);
-    });
+        // the fixed-seed stream must exercise all five constructors
+        assert.deepStrictEqual([...kindsSeen].sort(), ['and', 'implies', 'not', 'or', 'xor']);
+        assert.deepStrictEqual([...variablesSeen].sort(), [...variables].sort());
+        // Count structurally distinct formulas too, not just seeded draws.
+        assert.ok(formulasSeen.size >= 500, 'at least 500 distinct formula ASTs are cross-checked');
+      });
 
-    it('draws random assumption subsets per formula — consistent ones cross-checked', () => {
-      for (let seed = 0; seed < SEED_COUNT; seed += 1) {
-        const rng = mulberry32(seed);
-        const { expr } = randomFormula(rng, FORMULA_OPTIONS);
-        const reference = referenceModels(expr);
-        if (reference.length === 0) {
-          continue; // unsatisfiable formulas admit no consistent partial
+      it('draws random assumption subsets per formula - consistent ones cross-checked', () => {
+        const assumedVariables = new Set<string>();
+        for (let seed = 0; seed < SEED_COUNT; seed += 1) {
+          const rng = mulberry32(seed);
+          const { expr } = randomFormula(rng, options);
+          const reference = referenceModels(expr);
+          if (reference.length === 0) {
+            continue; // unsatisfiable formulas admit no consistent partial
+          }
+          for (let draw = 0; draw < ASSUMPTIONS_PER_FORMULA / 2; draw += 1) {
+            const partial = randomAssumptions(
+              mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw),
+              expr,
+              {
+                kind: 'consistent',
+                maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
+              },
+            );
+            assert.ok(
+              reference.some((model) => modelExtends(model, partial)),
+              'consistent subset',
+            );
+            for (const name of Object.keys(partial)) {
+              assumedVariables.add(name);
+            }
+            assertAssumptionsAgainstReference(
+              `${label} seed ${seed} draw ${draw}`,
+              expr,
+              partial,
+              reference,
+            );
+          }
         }
-        for (let draw = 0; draw < ASSUMPTIONS_PER_FORMULA / 2; draw += 1) {
-          const partial = randomAssumptions(
-            mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw),
-            expr,
-            {
-              kind: 'consistent',
-              maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
-            },
-          );
-          assertAssumptionsAgainstReference(`seed ${seed} draw ${draw}`, expr, partial, reference);
-        }
-      }
-    });
+        assert.deepStrictEqual([...assumedVariables].sort(), [...variables].sort());
+      });
 
-    it('draws random assumption subsets per formula — contradictory ones cross-checked', () => {
-      for (let seed = 0; seed < SEED_COUNT; seed += 1) {
-        const rng = mulberry32(seed);
-        const { expr } = randomFormula(rng, FORMULA_OPTIONS);
-        const reference = referenceModels(expr);
-        const variableCount = getVariables(expr).size;
-        if (reference.length === 2 ** variableCount) {
-          continue; // tautologies admit no contradictory partial
+      it('draws random assumption subsets per formula - contradictory ones cross-checked', () => {
+        const assumedVariables = new Set<string>();
+        for (let seed = 0; seed < SEED_COUNT; seed += 1) {
+          const rng = mulberry32(seed);
+          const { expr } = randomFormula(rng, options);
+          const reference = referenceModels(expr);
+          const variableCount = getVariables(expr).size;
+          if (reference.length === 2 ** variableCount) {
+            continue; // tautologies admit no contradictory partial
+          }
+          for (let draw = ASSUMPTIONS_PER_FORMULA / 2; draw < ASSUMPTIONS_PER_FORMULA; draw += 1) {
+            const partial = randomAssumptions(
+              mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw),
+              expr,
+              {
+                kind: 'contradictory',
+              },
+            );
+            assert.ok(
+              reference.every((model) => !modelExtends(model, partial)),
+              'contradictory subset',
+            );
+            for (const name of Object.keys(partial)) {
+              assumedVariables.add(name);
+            }
+            assertAssumptionsAgainstReference(
+              `${label} seed ${seed} draw ${draw}`,
+              expr,
+              partial,
+              reference,
+            );
+          }
         }
-        for (let draw = ASSUMPTIONS_PER_FORMULA / 2; draw < ASSUMPTIONS_PER_FORMULA; draw += 1) {
-          const partial = randomAssumptions(
-            mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw),
-            expr,
-            {
-              kind: 'contradictory',
-            },
-          );
-          assertAssumptionsAgainstReference(`seed ${seed} draw ${draw}`, expr, partial, reference);
-        }
-      }
-    });
+        assert.deepStrictEqual([...assumedVariables].sort(), [...variables].sort());
+      });
 
-    it('is deterministic under a fixed seed (same formula, model set, and subsets)', () => {
-      for (let seed = 0; seed < 8; seed += 1) {
-        const rngA = mulberry32(seed);
-        const rngB = mulberry32(seed);
-        const formulaA = randomFormula(rngA, FORMULA_OPTIONS).expr;
-        const formulaB = randomFormula(rngB, FORMULA_OPTIONS).expr;
-        assert.deepEqual(
-          sortModels(getAllSolutions(formulaA)),
-          sortModels(getAllSolutions(formulaB)),
-        );
+      it('is deterministic under a fixed seed (same formula, model set, and subsets)', () => {
+        for (let seed = 0; seed < 8; seed += 1) {
+          const rngA = mulberry32(seed);
+          const rngB = mulberry32(seed);
+          const formulaA = randomFormula(rngA, options).expr;
+          const formulaB = randomFormula(rngB, options).expr;
+          assert.deepStrictEqual(formulaA, formulaB);
+          assertModelListsEqual(getAllSolutions(formulaA), getAllSolutions(formulaB));
 
-        const reference = referenceModels(formulaA);
-        if (reference.length > 0) {
-          const consistentA = randomAssumptions(
-            mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA),
-            formulaA,
-            {
-              kind: 'consistent',
-              maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
-            },
-          );
-          const consistentB = randomAssumptions(
-            mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA),
-            formulaB,
-            {
-              kind: 'consistent',
-              maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
-            },
-          );
-          assert.deepEqual(consistentA, consistentB, `seed ${seed} consistent subset`);
+          const reference = referenceModels(formulaA);
+          if (reference.length > 0) {
+            const consistentA = randomAssumptions(
+              mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA),
+              formulaA,
+              {
+                kind: 'consistent',
+                maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
+              },
+            );
+            const consistentB = randomAssumptions(
+              mulberry32(ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA),
+              formulaB,
+              {
+                kind: 'consistent',
+                maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
+              },
+            );
+            assert.deepStrictEqual(
+              consistentA,
+              consistentB,
+              `${label} seed ${seed} consistent subset`,
+            );
+          }
         }
-      }
+      });
     });
-  });
+  }
 });

@@ -104,7 +104,7 @@ describe('Solver enqueue, trail, and decision levels', () => {
   });
 });
 
-describe('Solver occurrence-list propagation', () => {
+describe('Solver unit propagation', () => {
   it('propagates a complete unit-cascade chain with clause reasons', () => {
     const unit = clause([posLit(0)]);
     const implyB = clause([negLit(0), posLit(1)]);
@@ -178,6 +178,186 @@ describe('Solver occurrence-list propagation', () => {
     );
 
     assert.throws(() => solver.solve(), /maximum conflict budget exhausted \(1\)/);
+  });
+});
+
+describe('Solver two-watched-literal propagation', () => {
+  // The watch invariant after ANY solver activity: every clause of length >= 2
+  // appears in exactly two watch lists — those of its lits[0]/lits[1] slots —
+  // and units/empty clauses are never watched at all.
+  function assertWatchInvariant(solver: Solver): void {
+    for (const clause of solver.clauses) {
+      const memberships = solver.watches.reduce(
+        (count, list) => (list.includes(clause) ? count + 1 : count),
+        0,
+      );
+      if (clause.lits.length < 2) {
+        assert.strictEqual(memberships, 0, 'units and the empty clause are never watched');
+      } else {
+        assert.strictEqual(
+          memberships,
+          2,
+          `clause [${clause.lits.join(' ')}] must watch exactly two literals`,
+        );
+        assert.ok(solver.watches[clause.lits[0]].includes(clause));
+        assert.ok(solver.watches[clause.lits[1]].includes(clause));
+      }
+    }
+  }
+
+  it('attaches two watches per non-unit clause and never watches units', () => {
+    const C = clause([posLit(0), posLit(1), posLit(2)]);
+    const unitC = clause([negLit(3)]);
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'x'], [C, unitC]));
+
+    assert.ok(solver.watches[posLit(0)].includes(C));
+    assert.ok(solver.watches[posLit(1)].includes(C));
+    assert.ok(!solver.watches[posLit(2)].includes(C));
+    // The unit is asserted at level zero instead of being watched.
+    assert.strictEqual(solver.reason[3], unitC);
+    assert.ok(!solver.watches[posLit(3)].includes(unitC));
+    assertWatchInvariant(solver);
+  });
+
+  it('relocates a watch to a live third literal, removing it from the falsified list', () => {
+    const C = clause([posLit(0), posLit(1), posLit(2)]);
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c'], [C]));
+    assert.ok(solver.watches[posLit(0)].includes(C));
+    assert.ok(solver.watches[posLit(1)].includes(C));
+
+    solver.newDecisionLevel();
+    assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE
+    assert.strictEqual(solver.propagate(), null);
+
+    // In-place swap: the falsified a moved out of the watched slots, the live
+    // c took slot 1, and the watch on a was replaced by a watch on c.
+    assert.deepEqual(C.lits, [posLit(1), posLit(2), posLit(0)]);
+    assert.ok(!solver.watches[posLit(0)].includes(C), 'the falsified literal loses the watch');
+    assert.ok(solver.watches[posLit(1)].includes(C));
+    assert.ok(solver.watches[posLit(2)].includes(C), 'the live third literal gains the watch');
+    assertWatchInvariant(solver);
+  });
+
+  it('goes unit mid-search when a falsified watch has no replacement', () => {
+    // (a ∨ b ∨ c) with c = FALSE at level 0: deciding a = FALSE falsifies the
+    // watched literal a, the swap puts a in slot 1, c is already false, and no
+    // replacement exists — the clause goes unit and implies b.
+    const unitC = clause([negLit(2)]);
+    const C = clause([posLit(0), posLit(1), posLit(2)]);
+    const solverStats = stats();
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c'], [unitC, C]), {
+      stats: solverStats,
+    });
+
+    solver.newDecisionLevel();
+    assert.strictEqual(solver.enqueue(negLit(0), null), true);
+    assert.strictEqual(solver.propagate(), null);
+
+    assert.deepEqual(C.lits, [posLit(1), posLit(0), posLit(2)]);
+    assert.strictEqual(solver.reason[1], C);
+    assert.deepEqual(solver.trail, [negLit(2), negLit(0), posLit(1)]);
+    assert.strictEqual(solverStats.propagations, 2); // level-0 unit c + implied b
+    assert.strictEqual(solverStats.conflicts, 0);
+    assertWatchInvariant(solver);
+  });
+
+  it('keeps watch lists untouched across cancelUntil and propagates correctly afterwards', () => {
+    const unitC = clause([negLit(2)]);
+    const C = clause([posLit(0), posLit(1), posLit(2)]);
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c'], [unitC, C]));
+    const watchesBefore = [solver.watches[posLit(0)], solver.watches[posLit(1)]];
+
+    solver.newDecisionLevel();
+    assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE → unit b
+    assert.strictEqual(solver.propagate(), null);
+    assert.deepEqual(C.lits, [posLit(1), posLit(0), posLit(2)]);
+
+    solver.cancelUntil(0);
+    // Backtrack-safe by construction: no watch list was touched, and qhead is
+    // clamped to the truncated trail (entries below it stay pending).
+    assert.deepEqual(solver.watches[posLit(0)], watchesBefore[0]);
+    assert.deepEqual(solver.watches[posLit(1)], watchesBefore[1]);
+    assert.strictEqual(solver.qhead, 1);
+    assert.deepEqual([...solver.assigns], [Value.UNSET, Value.UNSET, Value.FALSE]);
+    assert.deepEqual(C.lits, [posLit(1), posLit(0), posLit(2)], 'swaps survive backtracking');
+
+    solver.newDecisionLevel();
+    assert.strictEqual(solver.enqueue(negLit(1), null), true); // b = FALSE → unit a
+    assert.strictEqual(solver.propagate(), null);
+    assert.deepEqual(C.lits, [posLit(0), posLit(1), posLit(2)]);
+    assert.strictEqual(solver.reason[0], C);
+    assert.deepEqual(solver.trail, [negLit(2), negLit(1), posLit(0)]);
+    assertWatchInvariant(solver);
+  });
+
+  it('examines every clause watching the same literal and keeps multi-watch membership exact', () => {
+    const C1 = clause([posLit(0), posLit(1)]);
+    const C2 = clause([posLit(0), posLit(2)]);
+    const C3 = clause([posLit(0), posLit(3)]);
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'x'], [C1, C2, C3]));
+    assert.strictEqual(solver.watches[posLit(0)].length, 3);
+
+    solver.newDecisionLevel();
+    assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE
+    assert.strictEqual(solver.propagate(), null);
+
+    // The list is walked backwards, so the last clause implies first.
+    assert.deepEqual(solver.trail, [negLit(0), posLit(3), posLit(2), posLit(1)]);
+    assert.strictEqual(solver.reason[1], C1);
+    assert.strictEqual(solver.reason[2], C2);
+    assert.strictEqual(solver.reason[3], C3);
+    assert.strictEqual(solver.watches[posLit(0)].length, 3, 'unit clauses keep their watches');
+    assertWatchInvariant(solver);
+  });
+
+  it('detects a propagation conflict across decision levels through falsified watches', () => {
+    // (a∨b∨c), (¬c∨d), (b∨¬d): the level-1 decision a=FALSE relocates the
+    // first clause's watch to c; the level-2 decision b=FALSE turns both
+    // remaining 2-literal clauses unit (d first, then c, in backward walk
+    // order); dequeuing d=FALSE falsifies (¬c∨d) — both of its watched
+    // literals — and propagate() returns that clause reference.
+    const C1 = clause([posLit(0), posLit(1), posLit(2)]);
+    const C2 = clause([negLit(2), posLit(3)]);
+    const C3 = clause([posLit(1), negLit(3)]);
+    const solverStats = stats();
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'd'], [C1, C2, C3]), {
+      stats: solverStats,
+    });
+
+    solver.newDecisionLevel(); // level 1
+    assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE
+    assert.strictEqual(solver.propagate(), null);
+    assert.deepEqual(C1.lits, [posLit(1), posLit(2), posLit(0)]); // watch relocated to c
+
+    solver.newDecisionLevel(); // level 2
+    assert.strictEqual(solver.enqueue(negLit(1), null), true); // b = FALSE
+    assert.strictEqual(solver.propagate(), C2);
+    assert.strictEqual(solverStats.conflicts, 1);
+    assert.strictEqual(solverStats.propagations, 2); // implied d, then implied c
+    assertWatchInvariant(solver);
+  });
+
+  it('keeps watch lists consistent across level-zero PLE assignments', () => {
+    const C1 = clause([posLit(0), posLit(1)]);
+    const C2 = clause([posLit(2), posLit(3)]);
+    const solverStats = stats();
+    const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'x'], [C1, C2]), {
+      enablePle: true,
+      stats: solverStats,
+    });
+
+    assert.strictEqual(solver.solve(), true);
+    assert.deepEqual(solver.model(), {
+      a: Value.TRUE,
+      b: Value.TRUE,
+      c: Value.TRUE,
+      x: Value.TRUE,
+    });
+    // The global sweep pins all four pure literals; no decision is needed and
+    // the watchers see nothing to propagate afterwards.
+    assert.strictEqual(solverStats.decisions, 0);
+    assert.strictEqual(solverStats.propagations, 4);
+    assertWatchInvariant(solver);
   });
 });
 
@@ -263,7 +443,7 @@ describe('Solver scoped pure-literal elimination', () => {
     assert.deepEqual(solver.model(), { a: Value.TRUE, b: Value.TRUE, x: Value.TRUE });
   });
 
-  it('falls back to chronological search when PLE is disabled', () => {
+  it('falls back to search when PLE is disabled', () => {
     const solverStats = stats();
     const solver = new Solver(handBuiltCnf(['a', 'b'], [clause([posLit(0), posLit(1)])]), {
       stats: solverStats,
@@ -290,7 +470,7 @@ const CHAIN_DECISION_BOUND = 4; // calibrated on Phase-1 implementation
 // decides those two FALSE-first.
 const HYPERGRAPH_DECISIONS = 2;
 
-describe('Solver DPLL search loop', () => {
+describe('Solver CDCL search loop', () => {
   it('solves the complex worked example to its exact unique model', () => {
     const formula = and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')));
     const solverStats = stats();
@@ -375,10 +555,11 @@ describe('Solver DPLL search loop', () => {
     assert.strictEqual(expressionValue(formula, model), Value.TRUE);
   });
 
-  it('flips a level decision after a conflict and finds the only model', () => {
+  it('learns a root unit after a conflict and finds the only model', () => {
     // (a∨b) ∧ (a∨¬b) ∧ (¬a∨¬b): unique model { a: TRUE, b: FALSE }. The
-    // FALSE-first decision a=FALSE forces b=TRUE and conflicts on (a∨¬b); the
-    // loop flips the level and propagates a=TRUE, b=FALSE.
+    // FALSE-first a=FALSE forces b=FALSE (backward watch-list order), which
+    // conflicts on (a∨b). Resolving b learns the unary (a), asserted at level
+    // zero with a clause reason; propagation then forces b=FALSE again.
     const solverStats = stats();
     const solver = new Solver(
       handBuiltCnf(
@@ -394,14 +575,31 @@ describe('Solver DPLL search loop', () => {
 
     assert.strictEqual(solver.solve(), true);
     assert.deepEqual(solver.model(), { a: Value.TRUE, b: Value.FALSE });
-    assert.ok(solverStats.conflicts >= 1);
-    assert.ok(solverStats.decisions >= 1);
+    assert.deepEqual(solverStats, {
+      decisions: 1,
+      propagations: 3, // b before conflict, learned a at root, then b at root
+      conflicts: 1,
+      restarts: 0,
+      learnedClauses: 1,
+      learnedClausesCurrent: 1,
+    });
+    const learned = solver.reason[0];
+    assert.ok(learned !== null);
+    assert.strictEqual(learned.learned, true);
+    assert.ok(solver.clauses.includes(learned));
+    assert.deepEqual(learned.lits, [posLit(0)]);
+    assert.strictEqual(solver.level[0], 0);
+    assert.strictEqual(solver.level[1], 0);
+    assert.ok(
+      solver.watches.every((list) => !list.includes(learned)),
+      'units are never watched',
+    );
   });
 
-  it('exhausts every decision level to report UNSAT', () => {
+  it('reports UNSAT on the root conflict after learning, without another decision', () => {
     // (a∨b) ∧ (¬a∨b) ∧ (a∨¬b) ∧ (¬a∨¬b): b is forced both ways — the search
-    // must try a=FALSE, a=TRUE and, on the second conflict at the same level,
-    // keep unwinding to report UNSAT.
+    // learns (a) from the a=FALSE branch, then the root assertion leads to a
+    // second conflict. A root conflict is UNSAT, not another analyzed clause.
     const solverStats = stats();
     const solver = new Solver(
       handBuiltCnf(
@@ -417,7 +615,15 @@ describe('Solver DPLL search loop', () => {
     );
 
     assert.strictEqual(solver.solve(), false);
-    assert.ok(solverStats.conflicts >= 2);
+    assert.deepEqual(solverStats, {
+      decisions: 1,
+      propagations: 3,
+      conflicts: 2,
+      restarts: 0,
+      learnedClauses: 1,
+      learnedClausesCurrent: 1,
+    });
+    assert.strictEqual(solver.trailLim.length, 0);
   });
 
   it('consults the variablePriority hook at decision points and honors its polarity', () => {

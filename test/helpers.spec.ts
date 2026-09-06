@@ -27,10 +27,24 @@ import {
 
 const FALSE = Value.FALSE;
 const TRUE = Value.TRUE;
+const ARBITRARY_NAMES = [
+  '__proto__',
+  'constructor',
+  'toString',
+  'hasOwnProperty',
+  '',
+  'a=0,b',
+  '0',
+  'quote"\\\n\u03bb',
+];
 
 // True when some model matches `partial` on every assigned variable.
 function hasExtension(partial: VariableAssignments, models: VariableAssignments[]): boolean {
-  return models.some((model) => Object.keys(partial).every((key) => model[key] === partial[key]));
+  return models.some((model) =>
+    Object.entries(partial).every(
+      ([key, value]) => Object.hasOwn(model, key) && model[key] === value,
+    ),
+  );
 }
 
 // Depth, maximum fan-in, and the set of AST node kinds below `node`.
@@ -274,17 +288,62 @@ describe('the naive reference enumerator', () => {
   });
 
   it('enumerates exactly 2^k total assignments, canonically ordered', () => {
-    assert.deepEqual(enumerateAssignments(['a', 'b']), [
+    assert.deepStrictEqual(enumerateAssignments(['a', 'b']), [
       { a: FALSE, b: FALSE },
       { a: TRUE, b: FALSE },
       { a: FALSE, b: TRUE },
       { a: TRUE, b: TRUE },
     ]);
     // Input order does not matter: results are keyed by sorted name.
-    assert.deepEqual(enumerateAssignments(['b', 'a']), enumerateAssignments(['a', 'b']));
+    assert.deepStrictEqual(enumerateAssignments(['b', 'a']), enumerateAssignments(['a', 'b']));
     assert.equal(enumerateAssignments(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']).length, 256);
     // The k <= 8 hard limit.
     assert.throws(() => enumerateAssignments(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']));
+  });
+
+  for (const name of ARBITRARY_NAMES) {
+    it(`preserves assignments and hand-computed truth tables for ${JSON.stringify(name)}`, () => {
+      // Computed property literals define own data properties, even for __proto__.
+      const falsy = { [name]: FALSE };
+      const truthy = { [name]: TRUE };
+      const assignments = enumerateAssignments([name]);
+      assert.deepStrictEqual(assignments, [falsy, truthy]);
+      for (const [index, assignment] of assignments.entries()) {
+        assert.strictEqual(Object.getPrototypeOf(assignment), Object.prototype);
+        assert.deepStrictEqual(Reflect.ownKeys(assignment), [name]);
+        assert.deepStrictEqual(Object.getOwnPropertyDescriptor(assignment, name), {
+          value: index === 0 ? FALSE : TRUE,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      assert.deepStrictEqual(referenceModels(and(name)), [truthy]);
+      assert.deepStrictEqual(referenceModels(not(name)), [falsy]);
+      assert.deepStrictEqual(referenceModels(or(name, not(name))), [falsy, truthy]);
+      assert.deepStrictEqual(referenceModels(and(name, not(name))), []);
+      assert.strictEqual(expressionValue(and(name), truthy), TRUE);
+      assert.strictEqual(expressionValue(and(name), falsy), FALSE);
+      assert.strictEqual(expressionValue(not(name), truthy), FALSE);
+      assert.strictEqual(expressionValue(not(name), falsy), TRUE);
+    });
+  }
+
+  it('rejects missing, inherited, and non-numeric reference variable reads', () => {
+    for (const name of ARBITRARY_NAMES) {
+      for (const assignment of [
+        {},
+        Object.create({ [name]: TRUE }),
+        { [name]: true },
+        { [name]: '0' },
+        { [name]: Value.UNSET },
+      ]) {
+        assert.throws(
+          () => expressionValue(and(name), assignment as VariableAssignments),
+          /reference evaluation requires an own TRUE\/FALSE assignment/,
+        );
+      }
+    }
   });
 
   it('classifies every total assignment exactly as the reference evaluator does', () => {
@@ -320,6 +379,46 @@ describe('the naive reference enumerator', () => {
 });
 
 describe('assumption-subset generation', () => {
+  for (const name of ARBITRARY_NAMES) {
+    it(`retains consistent and contradictory own assumptions for ${JSON.stringify(name)}`, () => {
+      for (const required of [FALSE, TRUE]) {
+        const expr = required === TRUE ? and(name) : not(name);
+        const opposite = required === TRUE ? FALSE : TRUE;
+        const rng = mulberry32(9);
+        let emptyDraws = 0;
+        let assignedDraws = 0;
+        for (let draw = 0; draw < 32; draw += 1) {
+          const partial = randomAssumptions(rng, expr, { kind: 'consistent' });
+          assert.strictEqual(Object.getPrototypeOf(partial), Object.prototype);
+          if (Object.keys(partial).length === 0) {
+            assert.deepStrictEqual(partial, {});
+            emptyDraws += 1;
+          } else {
+            assert.deepStrictEqual(partial, { [name]: required });
+            assignedDraws += 1;
+          }
+          assert.deepStrictEqual(randomAssumptions(rng, expr, { kind: 'contradictory' }), {
+            [name]: opposite,
+          });
+        }
+        assert.ok(emptyDraws > 0 && assignedDraws > 0, 'exercise both empty and assigned subsets');
+
+        // The irrelevant variable must be removed, never the required literal.
+        assert.deepStrictEqual(
+          randomAssumptions(mulberry32(5), and(expr, or('spare', not('spare'))), {
+            kind: 'contradictory',
+          }),
+          { [name]: opposite },
+        );
+        // Falsifying an OR requires retaining BOTH negative assumptions.
+        assert.deepStrictEqual(
+          randomAssumptions(mulberry32(6), or(name, 'spare'), { kind: 'contradictory' }),
+          { [name]: FALSE, spare: FALSE },
+        );
+      }
+    });
+  }
+
   it('produces consistent partials that extend to a model', () => {
     const rng = mulberry32(9);
     let checked = 0;
@@ -366,10 +465,10 @@ describe('assumption-subset generation', () => {
     const expr = or(and('a', not('b')), xor('c', 'd'));
     const consistentA = randomAssumptions(mulberry32(5), expr, { kind: 'consistent' });
     const consistentB = randomAssumptions(mulberry32(5), expr, { kind: 'consistent' });
-    assert.deepEqual(consistentA, consistentB);
+    assert.deepStrictEqual(consistentA, consistentB);
     const contradictoryA = randomAssumptions(mulberry32(6), expr, { kind: 'contradictory' });
     const contradictoryB = randomAssumptions(mulberry32(6), expr, { kind: 'contradictory' });
-    assert.deepEqual(contradictoryA, contradictoryB);
+    assert.deepStrictEqual(contradictoryA, contradictoryB);
   });
 
   it('honours maxAssumptions for consistent partials', () => {
@@ -396,13 +495,13 @@ describe('assumption-subset generation', () => {
 
   it('handles degenerate zero- and one-variable formulas', () => {
     // and() is a tautology with one model: the empty assignment.
-    assert.deepEqual(randomAssumptions(mulberry32(1), and(), { kind: 'consistent' }), {});
+    assert.deepStrictEqual(randomAssumptions(mulberry32(1), and(), { kind: 'consistent' }), {});
     // or() is unsatisfiable: the empty partial assignment contradicts it.
-    assert.deepEqual(randomAssumptions(mulberry32(2), or(), { kind: 'contradictory' }), {});
+    assert.deepStrictEqual(randomAssumptions(mulberry32(2), or(), { kind: 'contradictory' }), {});
     // not('b') has exactly one model; seed 3 happens to draw the empty
     // consistent partial and the {b: TRUE} contradiction (pinned values).
-    assert.deepEqual(randomAssumptions(mulberry32(3), not('b'), { kind: 'consistent' }), {});
-    assert.deepEqual(randomAssumptions(mulberry32(3), not('b'), { kind: 'contradictory' }), {
+    assert.deepStrictEqual(randomAssumptions(mulberry32(3), not('b'), { kind: 'consistent' }), {});
+    assert.deepStrictEqual(randomAssumptions(mulberry32(3), not('b'), { kind: 'contradictory' }), {
       b: Value.TRUE,
     });
   });
@@ -410,15 +509,28 @@ describe('assumption-subset generation', () => {
 
 describe('model comparison utilities', () => {
   it('modelKey is a stable, order-insensitive key', () => {
-    assert.equal(modelKey({ b: TRUE, a: FALSE }), 'a=0,b=1');
-    assert.equal(modelKey({ a: FALSE, b: TRUE }), 'a=0,b=1');
-    assert.equal(modelKey({}), '');
+    assert.strictEqual(modelKey({ b: TRUE, a: FALSE }), '[["a",0],["b",1]]');
+    assert.strictEqual(modelKey({ a: FALSE, b: TRUE }), '[["a",0],["b",1]]');
+    assert.strictEqual(modelKey({}), '[]');
+  });
+
+  it('modelKey unambiguously encodes arbitrary names instead of joining delimiters', () => {
+    const models: VariableAssignments[] = [{ a: FALSE, b: TRUE }, { 'a=0,b': TRUE }];
+    assert.notStrictEqual(modelKey(models[0]), modelKey(models[1]));
+    assertModelListsEqual(models, [...models].reverse());
+    for (const name of ARBITRARY_NAMES) {
+      for (const value of [FALSE, TRUE]) {
+        assert.deepStrictEqual(JSON.parse(modelKey({ [name]: value })), [[name, value]]);
+      }
+    }
   });
 
   it('modelsEqual ignores key order and distinguishes values', () => {
     assert.ok(modelsEqual({ a: TRUE, b: FALSE }, { b: FALSE, a: TRUE }));
     assert.ok(!modelsEqual({ a: TRUE, b: TRUE }, { a: TRUE, b: FALSE }));
     assert.ok(!modelsEqual({ a: TRUE, b: FALSE }, { a: TRUE }));
+    assert.ok(!modelsEqual({ a: true } as unknown as VariableAssignments, { a: TRUE }));
+    assert.ok(!modelsEqual(Object.assign(Object.create(null), { a: TRUE }), { a: TRUE }));
   });
 
   it('sortModels makes collections order-insensitive', () => {
@@ -426,7 +538,7 @@ describe('model comparison utilities', () => {
       { a: TRUE, b: FALSE },
       { a: FALSE, b: TRUE },
     ];
-    assert.deepEqual(sortModels(models), [...models].reverse());
+    assert.deepStrictEqual(sortModels(models), [...models].reverse());
   });
 
   it('assertModelListsEqual passes on permutations and fails on differences', () => {
@@ -443,10 +555,47 @@ describe('model comparison utilities', () => {
     assert.throws(() => assertModelListsEqual([{ a: TRUE, b: FALSE }], [{ a: TRUE, b: TRUE }]));
   });
 
-  it('assertModelShape accepts complete boolean models and rejects malformed ones', () => {
+  it('assertModelListsEqual rejects coerced values, wrong keys, counts, and prototypes', () => {
+    for (const [actual, expected] of [
+      [{ a: true }, { a: TRUE }],
+      [{ a: false }, { a: FALSE }],
+      [{ a: '1' }, { a: TRUE }],
+      [{}, { a: TRUE }],
+      [{ a: TRUE, b: FALSE }, { a: TRUE }],
+      [Object.assign(Object.create(null), { a: TRUE }), { a: TRUE }],
+    ]) {
+      assert.throws(
+        () => assertModelListsEqual([actual as VariableAssignments], [expected]),
+        assert.AssertionError,
+      );
+    }
+    assert.throws(() => assertModelListsEqual([], [{ a: TRUE }]), assert.AssertionError);
+    assert.throws(
+      () => assertModelListsEqual([{ a: TRUE }, { a: TRUE }], [{ a: TRUE }]),
+      assert.AssertionError,
+    );
+  });
+
+  it('assertModelShape accepts numeric TRUE/FALSE models and rejects malformed ones', () => {
     assertModelShape({ a: TRUE, b: FALSE }, or('a', 'b'));
+    assert.throws(() =>
+      assertModelShape({ a: true, b: false } as unknown as VariableAssignments, or('a', 'b')),
+    );
     assert.throws(() => assertModelShape({ a: TRUE, b: Value.UNSET }, or('a', 'b')));
     assert.throws(() => assertModelShape({ a: TRUE }, or('a', 'b')));
     assert.throws(() => assertModelShape({ a: TRUE, b: FALSE, c: TRUE }, or('a', 'b')));
+  });
+
+  it('assertModelShape checks exact own keys and the ordinary public model prototype', () => {
+    assertModelShape({ ['__proto__']: TRUE }, and('__proto__'));
+    assert.throws(() => assertModelShape({}, and('__proto__')), assert.AssertionError);
+    for (const model of [
+      Object.assign(Object.create({ a: TRUE }), { b: FALSE }),
+      Object.assign(Object.create(null), { a: TRUE, b: FALSE }),
+      Object.defineProperty({ a: TRUE, b: FALSE }, 'hidden', { value: TRUE }),
+      { a: TRUE, b: FALSE, [Symbol('extra')]: TRUE },
+    ]) {
+      assert.throws(() => assertModelShape(model, or('a', 'b')), assert.AssertionError);
+    }
   });
 });
