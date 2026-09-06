@@ -213,6 +213,7 @@ describe('end-to-end DIMACS verdicts', () => {
         assert.strictEqual(solver.solve(), false);
         assert.ok(solver.stats.conflicts < maxConflicts, 'UNSAT proof finishes before exhaustion');
         assert.ok(solver.stats.learnedClauses > 0, 'clause learning must actually engage');
+        assert.ok(solver.stats.restarts > 0, 'default-budget restarts must actually engage');
         runs.push({ ...solver.stats });
       }
       assert.deepStrictEqual(runs[1], runs[0], 'fresh default solves have identical counters');

@@ -543,22 +543,23 @@ describe('getAllSolutions', () => {
       };
       const models = getAllSolutions(or('a', 'b'), { stats });
       assert.strictEqual(models.length, 3);
-      // Four disposable solves: (decisions, propagations, conflicts, learned)
-      // = (1,1,0,0), (2,2,1,1), (1,3,1,1), (1,3,2,1). Each of the last
-      // three derives/asserts a root unit instead of flipping a decision;
-      // the fourth ends in a root conflict. All counters accumulate because
-      // the out-param is zeroed only once and shared by the fresh solvers.
-      assert.strictEqual(stats.decisions, 5);
-      assert.strictEqual(stats.propagations, 9);
-      assert.strictEqual(stats.conflicts, 4);
+      // One persistent solver: decide a=F -> b=T; after blocking, retry a=F
+      // and conflict, learn/assert a=T, decide b=F. The next blocker is now
+      // root-unit b=T (one immediate propagation); its model needs no decision.
+      // The final blocker conflicts at root. Thus only a's one learned unit
+      // lives in the database, not three units summed over discarded solvers.
+      // enumeration.spec.ts independently audits the per-search/root trace.
+      assert.strictEqual(stats.decisions, 3);
+      assert.strictEqual(stats.propagations, 4);
+      assert.strictEqual(stats.conflicts, 2);
       assert.strictEqual(stats.restarts, 0);
-      assert.strictEqual(stats.learnedClauses, 3);
-      assert.strictEqual(stats.learnedClausesCurrent, 3);
+      assert.strictEqual(stats.learnedClauses, 1);
+      assert.strictEqual(stats.learnedClausesCurrent, 1);
     });
   });
 
   describe('variablePriority contract', () => {
-    it('consults the hook on every internal iteration', () => {
+    it('consults the hook at enumeration decision points', () => {
       let hookCalls = 0;
       const hook: VariablePriority = (unassigned) => {
         hookCalls += 1;

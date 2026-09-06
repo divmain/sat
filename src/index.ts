@@ -1,19 +1,16 @@
 // Public API surface (v2). The single-shot `getSolution` compiles the
 // formula once, wraps it in a fresh `Solver` per call, and projects aux
 // variables out of the returned model. `getAllSolutions` enumerates every
-// model via blocking clauses: the formula is compiled once, then each
-// iteration solves the accumulated clause database (original clauses plus
-// every blocking clause so far) with a fresh `Solver`, records the projected
-// model, and appends the blocking clause that excludes it. Pure-literal
+// model via blocking clauses: the formula is compiled once and ONE persistent
+// Solver retains root assumptions, learned clauses, VSIDS and saved phases
+// across models. Permanent named-only blockers exclude previous models. Pure-literal
 // elimination is scoped to the single-shot `getSolution` entry point (Design
 // § Solver Core State and Invariants): it is enabled there by default and
 // deliberately unsound for enumeration (the (v∨a) counterexample) or
 // incremental solving. See Design § Public API Specification.
 
-import { compile, negLit, normalizeClauseLits, posLit } from './compile.js';
-import type { CompiledCnf } from './compile.js';
+import { compile } from './compile.js';
 import type { BooleanExpr, VariableAssignments } from './expr.js';
-import { Value } from './expr.js';
 import { Solver } from './solver.js';
 import type { SolverStats, VariablePriority } from './solver.js';
 
@@ -76,43 +73,11 @@ export function getSolution(expr: BooleanExpr, options?: SolveOptions): Variable
   return solver.model();
 }
 
-// Append the blocking clause that excludes `model` to the accumulated clause
-// database: the negations of the model's named-variable literals, normalized
-// (Design § Public API Specification). Aux variables are deliberately
-// excluded — each auxiliary variable is fully implied by its gate clauses
-// once the named variables are set, so every total model sharing this named
-// part is excluded, and blocking on named variables alone is complete. Clause
-// objects are shared with each fresh `Solver` (the constructor copies the
-// array, never the clauses) and are treated as immutable by Phase 1, so
-// appending to `cnf.clauses` is the Phase-1 design's "accumulated database".
-function addBlockingClause(cnf: CompiledCnf, model: VariableAssignments): void {
-  const rawLits: number[] = [];
-  for (let index = 0; index < cnf.numNamedVars; index += 1) {
-    const name = cnf.indexToName[index];
-    if (name === undefined) {
-      throw new Error(`missing name for variable index ${index}`);
-    }
-    const value = model[name];
-    rawLits.push(value === Value.TRUE ? negLit(index) : posLit(index));
-  }
-  // Each named variable appears exactly once, so normalization can never
-  // detect a tautology here; it sorts for determinism and keeps the empty
-  // blocking clause that terminates zero-variable enumeration.
-  const lits = normalizeClauseLits(rawLits);
-  if (lits === null) {
-    throw new Error('internal error: a blocking clause over named variables is tautological');
-  }
-  cnf.clauses.push({ lits, learned: false, activity: 0, lbd: 0 });
-  if (lits.length === 0) {
-    cnf.levelZeroUnsat = true;
-  }
-}
-
 /**
  * Find every satisfying assignment for `expr` via blocking clauses, or `[]`
- * when the formula is unsatisfiable. Output-sensitive: one fresh `Solver`
- * per model over the accumulated clause database (original clauses plus every
- * blocking clause so far) — no `2^n` materialization, no variable-count cap.
+ * when the formula is unsatisfiable. Output-sensitive: one persistent `Solver`
+ * over the accumulated clause database — no `2^n` materialization or
+ * variable-count cap. Learned clauses and heuristic state survive iterations.
  *
  * - No ordering guarantee: enumeration order is solver-dependent and is
  *   deliberately unspecified; compare models order-insensitively.
@@ -124,11 +89,13 @@ function addBlockingClause(cnf: CompiledCnf, model: VariableAssignments): void {
  *   pins interact with permanent blocking clauses to silently drop valid
  *   models (Design § Solver Core State and Invariants, the `(v∨a)`
  *   counterexample).
- * - Assumptions and `variablePriority` are honored on every internal
- *   iteration; assumptions follow the uniform validation contract (unknown
- *   names throw, `Value.UNSET` ignored, other values throw).
+ * - Constant assumptions are installed once at root and hold throughout;
+ *   `variablePriority` is honored at decision points. Assumptions follow the
+ *   uniform validation contract (unknown names throw, `Value.UNSET` ignored,
+ *   other values throw).
  * - A provided `stats` object is zeroed once at entry and then **accumulates
- *   across all per-model iterations**.
+ *   across all per-model iterations**; `learnedClausesCurrent` is the actual
+ *   live learned database, excluding permanent blockers.
  */
 export function getAllSolutions(expr: BooleanExpr, options?: SolveOptions): VariableAssignments[] {
   if (options?.stats !== undefined) {
@@ -136,21 +103,11 @@ export function getAllSolutions(expr: BooleanExpr, options?: SolveOptions): Vari
   }
 
   const cnf = compile(expr);
-  const solutions: VariableAssignments[] = [];
-
-  while (true) {
-    const solver = new Solver(cnf, {
-      assumptions: options?.assumptions,
-      variablePriority: options?.variablePriority,
-      enablePle: false,
-      stats: options?.stats,
-    });
-
-    if (!solver.solve()) {
-      return solutions;
-    }
-    const model = solver.model();
-    solutions.push(model);
-    addBlockingClause(cnf, model);
-  }
+  const solver = new Solver(cnf, {
+    assumptions: options?.assumptions,
+    variablePriority: options?.variablePriority,
+    enablePle: false,
+    stats: options?.stats,
+  });
+  return solver.enumerateModels();
 }

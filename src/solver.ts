@@ -1,6 +1,7 @@
 // Mutable solver state, MiniSat-style two-watched-literal unit propagation,
 // scoped pure-literal elimination, and iterative first-UIP CDCL search with
-// non-chronological backjumping, VSIDS branching, and phase saving.
+// non-chronological backjumping, VSIDS branching, phase saving, Luby restarts,
+// and periodic learned-clause reduction with learning-time LBD protection.
 // propagate() keeps its original contract
 // (returns the conflicting Clause | null); the public contract stays fixed.
 // See Design § Solver Core State and Invariants and § Search: From DPLL to
@@ -31,9 +32,38 @@ interface SolverOptions {
   enablePle?: boolean | undefined;
   stats?: SolverStats | undefined;
   maxConflicts?: number | undefined;
+  // Internal conflict-budget calibration only; never forwarded by public options.
+  restartBaseConflicts?: number | undefined;
+  // New learned admissions per reduction round, not a cap on protected clauses.
+  // Internal only: neither this knob nor Solver is exported by the public API.
+  learnedClauseReductionThreshold?: number | undefined;
 }
 
 const DEBUG_ASSERTIONS = process.env.NODE_ENV !== 'production';
+
+// One-based Luby sequence: S_k = S_(k-1), S_(k-1), 2^(k-1).
+// Find the containing block, then descend iteratively into its two copies.
+// Arithmetic, not bitwise shifts, keeps indices beyond 32 bits exact. This
+// helper is exported only from the internal module, not the package API.
+export function luby(index: number): number {
+  if (!Number.isSafeInteger(index) || index < 1) {
+    throw new Error('Luby index must be a positive safe integer');
+  }
+  let size = 1;
+  let value = 1;
+  while (size < index) {
+    size = size * 2 + 1;
+    value *= 2;
+  }
+  while (index !== size) {
+    size = (size - 1) / 2;
+    value /= 2;
+    if (index > size) {
+      index -= size;
+    }
+  }
+  return value;
+}
 
 function emptyStats(): SolverStats {
   return {
@@ -70,6 +100,9 @@ export class Solver {
   private readonly cnf: CompiledCnf;
   private readonly enablePle: boolean;
   private readonly maxConflicts: number | undefined;
+  private readonly restartBaseConflicts: number;
+  private readonly learnedClauseReductionThreshold: number;
+  private learnedSinceReduction = 0;
   // Semantic clause identity must not depend on the mutable watch order.
   private readonly clauseByKey = new Map<string, Clause>();
   private readonly seen: Uint8Array;
@@ -82,7 +115,9 @@ export class Solver {
   // An O(1) termination check avoids scanning all named variables at every
   // decision, which would defeat the heap's logarithmic selection cost.
   private unassignedNamed: number;
-  private conflictsThisSolve = 0;
+  // The internal cap bounds this instance's work, including all enumeration
+  // searches, independently of any pre-existing output-counter offsets.
+  private conflictsSoFar = 0;
   private startupConflict: Clause | null = null;
   private startupConflictReported = false;
   private permanentUnsat = false;
@@ -93,6 +128,19 @@ export class Solver {
       (!Number.isInteger(opts.maxConflicts) || opts.maxConflicts < 0)
     ) {
       throw new Error('maxConflicts must be a non-negative integer');
+    }
+    if (
+      opts.restartBaseConflicts !== undefined &&
+      (!Number.isSafeInteger(opts.restartBaseConflicts) || opts.restartBaseConflicts < 1)
+    ) {
+      throw new Error('restartBaseConflicts must be a positive safe integer');
+    }
+    if (
+      opts.learnedClauseReductionThreshold !== undefined &&
+      (!Number.isSafeInteger(opts.learnedClauseReductionThreshold) ||
+        opts.learnedClauseReductionThreshold < 1)
+    ) {
+      throw new Error('learnedClauseReductionThreshold must be a positive safe integer');
     }
 
     this.cnf = cnf;
@@ -116,6 +164,8 @@ export class Solver {
     this.variablePriority = opts.variablePriority;
     this.enablePle = opts.enablePle ?? false;
     this.maxConflicts = opts.maxConflicts;
+    this.restartBaseConflicts = opts.restartBaseConflicts ?? 100;
+    this.learnedClauseReductionThreshold = opts.learnedClauseReductionThreshold ?? 10_000;
 
     // Add clauses before assumptions. Units are deliberately absent from
     // watch lists: they are asserted once at level zero instead. Every
@@ -131,9 +181,8 @@ export class Solver {
       if (this.clauseByKey.has(key)) {
         continue;
       }
-      // Compiled clauses are already normalized, but their watch positions
-      // may have moved in an earlier enumeration solver. Preserve that order
-      // (and object identity); use a sorted COPY only for the canonical key.
+      // Compiled clauses are already normalized. Preserve their order and
+      // object identity; use a sorted COPY only for the canonical key.
       if (normalized.length !== clause.lits.length) {
         clause.lits = normalized;
       }
@@ -354,11 +403,16 @@ export class Solver {
       throw new Error('first-UIP analysis must produce a nonempty, non-tautological clause');
     }
     const lits = this.orderAssertingLits(normalized, assertingLit);
+    // LBD is the number of DISTINCT assignment levels at learning time, not
+    // clause length or depth. Include level zero (assumptions/PLE antecedents
+    // are retained above). Backjumping/asserting can merge these levels, so
+    // computing this later would incorrectly promote high-LBD clauses to glue.
+    const lbd = new Set(lits.map((lit) => this.level[varOf(lit)])).size;
     // MiniSat's relative decay: future conflicts get a larger increment.
     // This must follow ALL bumps (and any rescaling) for this conflict.
     this.varInc *= 1 / 0.95;
     return {
-      learned: { lits, learned: true, activity: 0, lbd: 0 },
+      learned: { lits, learned: true, activity: 0, lbd },
       backjumpLevel: lits.length === 1 ? 0 : this.level[varOf(lits[1])],
     };
   }
@@ -391,11 +445,138 @@ export class Solver {
     this.clauseByKey.set(key, learned);
     this.clauses.push(learned);
     this.attachClause(learned);
-    // Count new learned database entries, not duplicate rediscoveries. Until
-    // reduction exists, live and total increase together (units included).
+    // Count new learned database entries, not live duplicate rediscoveries
+    // (units included). Re-deriving a deleted clause IS a new admission.
     this.stats.learnedClauses += 1;
     this.stats.learnedClausesCurrent += 1;
+    this.learnedSinceReduction += 1;
     return learned;
+  }
+
+  // Permanently strengthen this instance (used for enumeration blockers, NOT
+  // per-call assumptions). Register the full normalized clause, retaining its
+  // canonical identity and promoting a learned duplicate to permanent role.
+  // Then undo non-root assignments BEFORE interpreting its truth status: a
+  // blocker is false at the just-returned model, but that is not root UNSAT.
+  // Root facts may have been processed long ago, so choose live watches and
+  // explicitly enqueue a root unit / remember a root conflict at admission.
+  addPermanentClause(rawLits: readonly number[]): Clause | null {
+    if (this.enablePle) {
+      throw new Error('permanent clause insertion requires enablePle: false');
+    }
+    for (const lit of rawLits) {
+      if (!Number.isInteger(lit) || lit < 0 || lit >= this.watches.length) {
+        throw new Error(`permanent clause contains out-of-range literal: ${lit}`);
+      }
+    }
+    const normalized = normalizeClauseLits(rawLits);
+    if (normalized === null) {
+      return null;
+    }
+    const key = normalized.join(',');
+    let clause = this.clauseByKey.get(key);
+    if (clause === undefined) {
+      clause = { lits: normalized, learned: false, activity: 0, lbd: 0 };
+      this.clauseByKey.set(key, clause);
+      this.clauses.push(clause);
+    } else {
+      this.detachClause(clause);
+      if (clause.learned) {
+        clause.learned = false;
+        this.stats.learnedClausesCurrent -= 1;
+        // Historical admissions and the reduction cadence do not rewind.
+      }
+    }
+    this.cancelUntil(0);
+
+    // Root assignments never get undone. Two non-false watches suffice; if
+    // only one exists, watch it and a root-false literal. Keep those false
+    // antecedents in the clause, including constant assumptions. Structural
+    // units alone are unwatched; a longer root-unit clause still has two watches.
+    const available: number[] = [];
+    const falsified: number[] = [];
+    for (const lit of normalized) {
+      (litValue(lit, this.assigns) === Value.FALSE ? falsified : available).push(lit);
+    }
+    clause.lits = [...available, ...falsified];
+    this.attachClause(clause);
+    if (available.length === 0) {
+      // Includes the empty blocker over zero named variables. propagate()
+      // reports this conflict once, even with an already-drained root queue.
+      this.startupConflict ??= clause;
+    } else if (available.length === 1 && litValue(available[0], this.assigns) === Value.UNSET) {
+      if (!this.enqueue(available[0], clause)) {
+        throw new Error('new permanent root unit must enqueue an unassigned literal');
+      }
+      this.stats.propagations += 1;
+    }
+    return clause;
+  }
+
+  // The shared production enumeration loop. Public getAllSolutions compiles
+  // and constructs ONCE, with PLE disabled; internal stress tests use this
+  // exact method with a smaller reduction threshold, not a second toy loop.
+  // Assumptions were installed once by the constructor and remain at root.
+  enumerateModels(): VariableAssignments[] {
+    if (this.enablePle) {
+      throw new Error('model enumeration requires enablePle: false');
+    }
+    const solutions: VariableAssignments[] = [];
+    while (this.solve()) {
+      solutions.push(this.model());
+      const blocker: number[] = [];
+      for (let variable = 0; variable < this.cnf.numNamedVars; variable += 1) {
+        blocker.push(variable * 2 + (this.assigns[variable] === Value.TRUE ? 1 : 0));
+      }
+      // Capture the complete named assignment before admission cancels to
+      // root. Auxiliaries are never blocked or exposed. Learned consequences
+      // of the growing formula (including older blockers) stay sound forever.
+      this.addPermanentClause(blocker);
+    }
+    return solutions;
+  }
+
+  // Internal operation, also directly exercised by invariant/protection tests.
+  // Stable activity ranking considers the worse floor(n/2) of ALL live learned
+  // clauses, skipping protected entries without backfilling from the better
+  // half. Equal activities retain database/admission order (stable Array.sort).
+  // The permanent originals/blocking clauses are never candidates by role.
+  reduceLearnedClauses(): void {
+    // Progress the cadence even if every candidate is protected. Testing the
+    // live size alone would repeatedly scan/sort on EVERY subsequent conflict.
+    this.learnedSinceReduction = 0;
+    const learned = this.clauses.filter((clause) => clause.learned);
+    learned.sort((left, right) => left.activity - right.activity);
+    // Inspect the complete reason array: root and auxiliary implications, and
+    // pending assertions, all lock their clauses regardless of watch position.
+    const locked = new Set(this.reason);
+    const removed = new Set<Clause>();
+    for (let index = 0; index < Math.floor(learned.length / 2); index += 1) {
+      const clause = learned[index];
+      if (clause.lbd > 2 && !locked.has(clause)) {
+        removed.add(clause);
+      }
+    }
+    if (removed.size === 0) {
+      return;
+    }
+
+    let retained = 0;
+    for (const clause of this.clauses) {
+      if (removed.has(clause)) {
+        this.detachClause(clause);
+        // Watches permute literals. Delete the semantic key using a sorted
+        // COPY, never by changing a live clause's watched positions.
+        this.clauseByKey.delete([...clause.lits].sort((a, b) => a - b).join(','));
+      } else {
+        // Compact in place; neither survivor objects nor the database array
+        // are replaced. Reasons, phases, root facts and VSIDS stay untouched.
+        this.clauses[retained++] = clause;
+      }
+    }
+    this.clauses.length = retained;
+    this.stats.learnedClausesCurrent -= removed.size;
+    // learnedClauses is total admissions and must NEVER decrease on deletion.
   }
 
   newDecisionLevel(): void {
@@ -458,6 +639,13 @@ export class Solver {
     // an asserting first-UIP clause and jumps directly to its assertion
     // level, superseding chronological decision flipping. Aux variables are
     // never branched on; SAT requires every named variable to be assigned.
+    // Count conflicts since the last budget boundary in base-sized blocks:
+    // this implements base * luby(index) without an unsafe Number product or
+    // a unit-increment counter that could stop advancing above 2^53. Ordinary
+    // backjumps do NOT reset the budget. State is per search, not shared stats.
+    let restartIndex = 1;
+    let blocksUntilRestart = luby(restartIndex);
+    let conflictsInBlock = 0;
     while (true) {
       const conflict = this.propagate();
       if (conflict !== null) {
@@ -478,6 +666,32 @@ export class Solver {
           );
         }
         this.stats.propagations += 1;
+        conflictsInBlock += 1;
+        if (conflictsInBlock === this.restartBaseConflicts) {
+          conflictsInBlock = 0;
+          blocksUntilRestart -= 1;
+          if (blocksUntilRestart === 0) {
+            // Finish learning/asserting BEFORE restarting, but do not propagate
+            // the assertion first: that could exceed this epoch's conflict
+            // budget. A root assertion stays queued (including unwatched units);
+            // a conditional assertion above root is undone, never promoted.
+            const restarted = this.trailLim.length > 0;
+            this.cancelUntil(0);
+            if (restarted) {
+              this.stats.restarts += 1;
+            }
+            // Consume an exhausted epoch even if the normal backjump already
+            // reached root. Do not count that no-op as an additional restart.
+            restartIndex += 1;
+            blocksUntilRestart = luby(restartIndex);
+          }
+        }
+        // Do not reduce at registration: the learned clause must first become
+        // the assertion's reason. After an optional restart, only reasons that
+        // are still active are locked. This does not drain pending propagation.
+        if (this.learnedSinceReduction >= this.learnedClauseReductionThreshold) {
+          this.reduceLearnedClauses();
+        }
       } else if (this.namedVariablesAssigned()) {
         return true;
       } else {
@@ -777,14 +991,74 @@ export class Solver {
 
   private recordConflict(): void {
     this.stats.conflicts += 1;
-    this.conflictsThisSolve += 1;
+    this.conflictsSoFar += 1;
     // Non-root conflicts decay at the END of analyze, after bumping. A
     // terminal root conflict has no analysis/bump but still gets its decay.
     if (this.trailLim.length === 0) {
       this.varInc *= 1 / 0.95;
     }
-    if (this.maxConflicts !== undefined && this.conflictsThisSolve >= this.maxConflicts) {
+    if (this.maxConflicts !== undefined && this.conflictsSoFar >= this.maxConflicts) {
       throw new Error(`maximum conflict budget exhausted (${this.maxConflicts})`);
+    }
+  }
+
+  // Explicit debug audit, not a database-wide scan on every enqueue. Safe at
+  // reduction boundaries with queued assertions: no propagation fixpoint is
+  // required. This method is internal to Solver, not a public package export.
+  checkInvariants(): void {
+    this.assertTrailInvariant();
+    const live = new Set(this.clauses);
+    if (live.size !== this.clauses.length || this.clauseByKey.size !== live.size) {
+      throw new Error('clause database invariant violated: duplicate or stale registry entries');
+    }
+    for (const clause of this.clauses) {
+      const normalized = normalizeClauseLits(clause.lits);
+      if (
+        normalized === null ||
+        normalized.length !== clause.lits.length ||
+        clause.lits.some((lit) => !Number.isInteger(lit) || lit < 0 || lit >= this.watches.length)
+      ) {
+        throw new Error('clause database invariant violated: invalid clause literals');
+      }
+      if (this.clauseByKey.get(normalized.join(',')) !== clause) {
+        throw new Error('clause database invariant violated: non-canonical clause identity');
+      }
+    }
+
+    const watchCounts = new Map<Clause, number>();
+    for (let lit = 0; lit < this.watches.length; lit += 1) {
+      const members = new Set<Clause>();
+      for (const clause of this.watches[lit]) {
+        if (!live.has(clause)) {
+          throw new Error('watch invariant violated: clause is not live');
+        }
+        if (
+          clause.lits.length < 2 ||
+          (clause.lits[0] !== lit && clause.lits[1] !== lit) ||
+          members.has(clause)
+        ) {
+          throw new Error('watch invariant violated: incorrect or duplicate membership');
+        }
+        members.add(clause);
+        watchCounts.set(clause, (watchCounts.get(clause) ?? 0) + 1);
+      }
+    }
+    for (const clause of this.clauses) {
+      if ((watchCounts.get(clause) ?? 0) !== (clause.lits.length < 2 ? 0 : 2)) {
+        throw new Error('watch invariant violated: missing clause watch');
+      }
+    }
+    for (let variable = 0; variable < this.reason.length; variable += 1) {
+      const reason = this.reason[variable];
+      if (reason !== null) {
+        if (!live.has(reason)) {
+          throw new Error('reason invariant violated: clause is not live');
+        }
+        const lit = variable * 2 + (this.assigns[variable] === Value.FALSE ? 1 : 0);
+        if (this.assigns[variable] === Value.UNSET || !reason.lits.includes(lit)) {
+          throw new Error('reason invariant violated: clause does not explain its assignment');
+        }
+      }
     }
   }
 
