@@ -1,13 +1,13 @@
-// Public API surface (v2). The single-shot `getSolution` compiles the
-// formula once, wraps it in a fresh `Solver` per call, and projects aux
-// variables out of the returned model. `getAllSolutions` enumerates every
-// model via blocking clauses: the formula is compiled once and ONE persistent
-// Solver retains root assumptions, learned clauses, VSIDS and saved phases
-// across models. Permanent named-only blockers exclude previous models. Pure-literal
-// elimination is scoped to the single-shot `getSolution` entry point (Design
-// § Solver Core State and Invariants): it is enabled there by default and
-// deliberately unsound for enumeration (the (v∨a) counterexample) or
-// incremental solving. See Design § Public API Specification.
+// Public API surface. The single-shot `getSolution` compiles the formula
+// once, wraps it in a fresh `Solver` per call, and projects aux variables out
+// of the returned model. `getAllSolutions` enumerates every model via
+// blocking clauses: the formula is compiled once and ONE persistent Solver
+// retains root assumptions, learned clauses, VSIDS and saved phases across
+// models. Pure-literal elimination is scoped to the single-shot `getSolution`
+// entry point (Design § Solver Core State and Invariants): it is enabled
+// there by default and deliberately unsound for enumeration (the (v∨a)
+// counterexample) or incremental solving. See Design § Public API
+// Specification.
 
 import { compile } from './compile.js';
 import type { BooleanExpr, VariableAssignments } from './expr.js';
@@ -17,14 +17,15 @@ import type { SolverStats, VariablePriority } from './solver.js';
 export { and, or, not, implies, xor, Value } from './expr.js';
 export type { BooleanExpr, Variable, VariableAssignments } from './expr.js';
 
-// `SolverStats` and `VariablePriority` are defined in solver.ts (the Solver
-// constructor needs them in Phase 1, before index.ts exists as a public face,
-// and importing them from index.ts would create a module cycle); index.ts
-// re-exports them as public types at this rewire. The Solver class itself
-// stays internal.
+// `SolverStats` and `VariablePriority` are defined in solver.ts because the
+// Solver constructor consumes them, and importing them from index.ts would
+// create a module cycle; index.ts re-exports them as public types. The Solver
+// class itself stays internal.
 export type { SolverStats, VariablePriority } from './solver.js';
 
 export interface SolveOptions {
+  // `| undefined` on every optional property keeps options-forwarding
+  // typechecking under exactOptionalPropertyTypes.
   assumptions?: VariableAssignments | undefined;
   variablePriority?: VariablePriority | undefined;
   /** Out-param: zeroed by the callee, then populated with this call's stats. */
@@ -61,7 +62,8 @@ const zeroStats = (stats: SolverStats): void => {
  * project the model over named variables (aux variables never leak).
  *
  * - `and()` (the empty conjunction) returns `{}`; `or()` (the empty
- *   disjunction) returns `null`.
+ *   disjunction) returns `null` — the empty disjunction is the empty clause,
+ *   i.e. UNSAT.
  * - Assumptions follow the uniform validation contract: unknown variable
  *   names throw, `Value.UNSET` entries are ignored, and any other value
  *   throws. Assumptions propagate immediately, so an inconsistent set yields
@@ -97,13 +99,12 @@ export function getSolution(expr: BooleanExpr, options?: SolveOptions): Variable
  * - No ordering guarantee: enumeration order is solver-dependent and is
  *   deliberately unspecified; compare models order-insensitively.
  * - `and()` (the empty conjunction) returns `[{}]` (the empty blocking clause
- *   terminates the loop); `or()` (the empty disjunction) returns `[]`.
+ *   terminates the loop); `or()` (the empty disjunction) returns `[]` — the
+ *   empty clause makes the formula trivially UNSAT.
  * - A formula that compiles to `levelZeroUnsat` returns `[]` immediately.
- * - Pure-literal elimination is **disabled** in enumeration mode: it is
- *   satisfiability-preserving but not model-preserving, and stale level-0
- *   pins interact with permanent blocking clauses to silently drop valid
- *   models (Design § Solver Core State and Invariants, the `(v∨a)`
- *   counterexample).
+ * - Each model is excluded by a permanent named-only blocker clause.
+ * - Pure-literal elimination is **disabled** in enumeration mode for the
+ *   reason given in the banner above.
  * - Constant assumptions are installed once at root and hold throughout;
  *   `variablePriority` is honored at decision points. Assumptions follow the
  *   uniform validation contract (unknown names throw, `Value.UNSET` ignored,
@@ -130,9 +131,10 @@ export function getAllSolutions(expr: BooleanExpr, options?: SolveOptions): Vari
 /**
  * Compile once and solve repeatedly with independent per-call assumptions.
  * Base clauses, sound learned clauses, saved phases and VSIDS survive calls;
- * pure-literal elimination is disabled because its root pins are not sound
- * under changing assumptions. Returned models are independent named-only records.
- * Calls on the same handle are synchronous and cannot be reentered from a hook.
+ * pure-literal elimination stays off — its root-level pins are not sound when
+ * assumptions change between calls (see the banner above). Returned models
+ * are independent named-only records. Calls on the same handle are
+ * synchronous and cannot be reentered from a hook.
  */
 export function createSolver(
   expr: BooleanExpr,
@@ -143,6 +145,9 @@ export function createSolver(
     enablePle: false,
   });
   return {
+    // A closure, not the Solver itself: re-exporting the class would leak
+    // internal fields and methods (clauses, watches, enumerateModels, the
+    // enablePle knob); this wrapper exposes exactly one method.
     solve: (assumptions, stats) => solver.solveAssuming(assumptions, stats),
   };
 }

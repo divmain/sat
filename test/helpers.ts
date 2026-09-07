@@ -487,7 +487,7 @@ export function serializeDimacs(cnf: DimacsCnf): string {
 // literals) and no two pigeons share a hole (a binary clause per (pigeon,
 // pigeon) pair per hole). Variable (pigeon i, hole j) has index
 // i*m + j + 1, so variables are grouped by pigeon — the deterministic
-// ordering the Phase-1 DPLL benchmark depends on.
+// ordering the DPLL benchmark depends on.
 export function phpCnf(numPigeons: number, numHoles: number): DimacsCnf {
   if (!Number.isInteger(numPigeons) || numPigeons < 1) {
     throw new RangeError(`phpCnf requires an integer numPigeons >= 1 (got ${numPigeons})`);

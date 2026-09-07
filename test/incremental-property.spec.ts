@@ -1,5 +1,3 @@
-// Additional Phase-4 battery. The existing property.spec.ts corpus, both
-// variants and their 1024-formula / 3824-assumption gates are unchanged.
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 import { createSolver, Value } from '../src/index.js';

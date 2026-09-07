@@ -2,8 +2,6 @@
 // scoped pure-literal elimination, and iterative first-UIP CDCL search with
 // non-chronological backjumping, VSIDS branching, phase saving, Luby restarts,
 // and periodic learned-clause reduction with learning-time LBD protection.
-// propagate() keeps its original contract
-// (returns the conflicting Clause | null); the public contract stays fixed.
 // See Design § Solver Core State and Invariants and § Search: From DPLL to
 // CDCL.
 
@@ -17,10 +15,16 @@ export interface SolverStats {
   propagations: number;
   conflicts: number;
   restarts: number;
+  /** Total learned-clause admissions over the solver's lifetime; deletions never rewind it. */
   learnedClauses: number;
+  /** Live learned clauses currently in the database, excluding permanent blockers. */
   learnedClausesCurrent: number;
 }
 
+// Overrides heuristic choices at decision points: it receives named, unassigned
+// variables only, and may return null to defer to the VSIDS default. The
+// caller revalidates the returned name/preference, so the hook cannot force an
+// already-assigned or unknown variable.
 export type VariablePriority = (
   unassigned: Variable[],
   assignments: Partial<Record<Variable, Value>>,
@@ -39,6 +43,9 @@ interface SolverOptions {
   learnedClauseReductionThreshold?: number | undefined;
 }
 
+// Gates the trail-invariant audits in enqueue/cancelUntil/propagate. The
+// NODE_ENV check lets bundlers fold it to a constant and dead-code-eliminate
+// the audits in production builds, while keeping them on by default in dev.
 const DEBUG_ASSERTIONS = process.env.NODE_ENV !== 'production';
 
 // One-based Luby sequence: S_k = S_(k-1), S_(k-1), 2^(k-1).
@@ -91,7 +98,7 @@ export class Solver {
   // watching literal `l` — i.e. l is one of that clause's two watched
   // literals, kept at clause.lits[0] or clause.lits[1] (the MiniSat in-place
   // swap convention). Watch lists hold clause object references, never
-  // indices, so Phase-3 clause deletion stays safe by construction. Clause
+  // indices, so clause deletion can never dangle a watch. Clause
   // attachment and propagation's watch relocation preserve that identity.
   readonly watches: Clause[][];
   readonly stats: SolverStats;
@@ -235,6 +242,11 @@ export class Solver {
     return true;
   }
 
+  // A conflict discovered while root facts were installed (empty clause, unit
+  // contradiction, contradictory assumption, empty blocker) is cached here.
+  // The FIRST propagate() reports it and counts it once; later calls replay
+  // the cached clause without re-counting, so stats and the conflict budget
+  // agree with the single conflict.
   propagate(): Clause | null {
     if (this.startupConflict !== null) {
       if (!this.startupConflictReported) {
@@ -515,9 +527,8 @@ export class Solver {
   }
 
   // The shared production enumeration loop. Public getAllSolutions compiles
-  // and constructs ONCE, with PLE disabled; internal stress tests use this
-  // exact method with a smaller reduction threshold, not a second toy loop.
-  // Assumptions were installed once by the constructor and remain at root.
+  // and constructs ONCE, with PLE disabled. Assumptions were installed once
+  // by the constructor and remain at root.
   enumerateModels(): VariableAssignments[] {
     if (this.enablePle) {
       throw new Error('model enumeration requires enablePle: false');
@@ -537,7 +548,6 @@ export class Solver {
     return solutions;
   }
 
-  // Internal operation, also directly exercised by invariant/protection tests.
   // Stable activity ranking considers the worse floor(n/2) of ALL live learned
   // clauses, skipping protected entries without backfilling from the better
   // half. Equal activities retain database/admission order (stable Array.sort).
@@ -621,8 +631,8 @@ export class Solver {
     this.assertTrailInvariant();
   }
 
-  // Incremental call boundary, also used directly by internal-knob tests. Keep
-  // the core's lifetime ledger separate from caller-owned per-call outputs:
+  // Incremental call boundary. Keep the core's lifetime ledger separate from
+  // caller-owned per-call outputs:
   // resetting an output must not reset the live database or reduction cadence.
   // The ordinary solve()/model() lifecycle remains available for enumeration.
   solveAssuming(
@@ -652,8 +662,10 @@ export class Solver {
       const ordered = this.translateAssumptions(assumptions);
       return this.solve(ordered) ? this.model() : null;
     } finally {
-      // Project BEFORE undoing the model; cleanup also runs on validation or
-      // hook errors. Never publish into arbitrary setters before root cleanup.
+      // The model (if any) was already materialized by the try above; this
+      // cleanup also runs on validation or hook errors. Publish per-call
+      // stats only after root cleanup, so an early exit cannot leave the
+      // caller's output half-filled.
       try {
         this.cancelUntil(0);
         if (stats !== undefined && reportStats) {
@@ -673,6 +685,10 @@ export class Solver {
   }
 
   solve(assumptions: readonly number[] = []): boolean {
+    // Only base-formula conflicts are permanent UNSAT: an empty clause, or a
+    // conflict found by root-level propagation, means the formula has no
+    // model. A falsified per-call assumption (below) is context-local and
+    // must never poison permanentUnsat.
     if (this.permanentUnsat || this.cnf.levelZeroUnsat) {
       this.permanentUnsat = true;
       return false;
@@ -688,9 +704,9 @@ export class Solver {
     }
 
     // Iterative CDCL (Design § Search: From DPLL to CDCL). A conflict learns
-    // an asserting first-UIP clause and jumps directly to its assertion
-    // level, superseding chronological decision flipping. Aux variables are
-    // never branched on; SAT requires every named variable to be assigned.
+    // an asserting first-UIP clause and backjumps to its assertion level,
+    // instead of undoing the last decision and re-exploring. Aux variables
+    // are never branched on; SAT requires every named variable to be assigned.
     // Count conflicts since the last budget boundary in base-sized blocks:
     // this implements base * luby(index) without an unsafe Number product or
     // a unit-increment counter that could stop advancing above 2^53. Ordinary
@@ -848,6 +864,8 @@ export class Solver {
     }
   }
 
+  // `Value.UNSET` entries translate to nothing: they mean "no assumption for
+  // this variable", per the uniform validation contract in index.ts.
   private translateAssumptions(assumptions: VariableAssignments | undefined): number[] {
     if (assumptions === undefined) {
       return [];
@@ -871,6 +889,11 @@ export class Solver {
 
   // Constructor-only assumptions are constant for this instance (single-shot
   // solving / enumeration), unlike solveAssuming's retractable level prefix.
+  // An assumption that contradicts an existing assignment blames that
+  // assignment's explaining clause as the startup conflict, so propagate()
+  // reports it exactly once. Assumption-assigned variables have no reason
+  // clause, and assumptions map one literal per name so they cannot
+  // contradict each other — a null reason here is a genuine invariant breach.
   private enqueueAssumptions(assumptions: VariableAssignments | undefined): void {
     for (const lit of this.translateAssumptions(assumptions)) {
       if (!this.enqueue(lit, null)) {
@@ -882,6 +905,16 @@ export class Solver {
     }
   }
 
+  // Pure-literal elimination, enabled only for single-shot getSolution
+  // (Design § Solver Core State and Invariants): a variable occurring in
+  // exactly one polarity among the still-unsatisfied clauses can be pinned to
+  // the other polarity without affecting satisfiability. Pins are enqueued at
+  // root, which is why this mode stays off for enumeration and incremental
+  // solving. Bitmask: bit 1 = positive occurrence, bit 2 = negative
+  // occurrence; a value of exactly 1 or 2 marks a pure variable. Each scan
+  // assigns ALL such variables in ascending index order, then propagates;
+  // because a pin can newly satisfy clauses (making further variables pure),
+  // the sweep repeats until a round assigns nothing.
   private eliminatePureLiterals(): boolean {
     while (true) {
       const polarities = new Uint8Array(this.assigns.length);
@@ -933,8 +966,9 @@ export class Solver {
 
   // Select the next decision: the `variablePriority` hook first (named,
   // unassigned, defensively revalidated), else VSIDS with the saved phase.
-  // Initial activity ties and FALSE phases reproduce Phase 1's defaults.
-  // Aux variables are never decided (Design § Branching Heuristics).
+  // Ties break by index and the default phase is FALSE, so branching is
+  // deterministic. Aux variables are never decided (Design § Branching
+  // Heuristics).
   private pickDecision(): [number, boolean] {
     if (this.variablePriority !== undefined) {
       const unassigned: Variable[] = [];
@@ -1091,9 +1125,11 @@ export class Solver {
     }
   }
 
-  // Explicit debug audit, not a database-wide scan on every enqueue. Safe at
-  // reduction boundaries with queued assertions: no propagation fixpoint is
-  // required. This method is internal to Solver, not a public package export.
+  // On-demand audit of the clause database, watch lists and reasons. The
+  // per-enqueue trail checks in assertTrailInvariant are cheap; this
+  // database-wide scan must not run per enqueue, so it fires only when
+  // explicitly asked. Safe at reduction boundaries with queued assertions: no
+  // propagation fixpoint is required. Internal to Solver, not publicly exported.
   checkInvariants(): void {
     this.assertTrailInvariant();
     const live = new Set(this.clauses);

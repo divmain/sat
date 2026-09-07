@@ -303,7 +303,11 @@ class CheckedSolver extends RestartTraceSolver {
     );
     const live = this.clauses.filter((clause) => clause.learned).length;
     assert.strictEqual(this.stats.learnedClausesCurrent, live);
-    assert.strictEqual(this.stats.learnedClauses, live, 'no reduction in this ticket');
+    assert.strictEqual(
+      this.stats.learnedClauses,
+      live,
+      'no reduction occurs in these runs, so the learned-clause count equals the live count',
+    );
   }
 }
 
@@ -703,7 +707,7 @@ describe('Solver restart regression and reference gates', () => {
     assertReasons(solver);
     assertWatches(solver);
     assertHeap(solver);
-    t.diagnostic(`Phase 3 task-10b8 PHP(8,7), base100: ${JSON.stringify(solver.stats)}`);
+    t.diagnostic(`PHP(8,7), base100: ${JSON.stringify(solver.stats)}`);
   });
 
   it('matches independent truth tables under base1, with both PLE modes and fixed assumptions', (t) => {

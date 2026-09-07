@@ -1,7 +1,7 @@
 // Seeded cross-validation of both solver variants against the naive reference
-// enumerator (Design § Testing and Benchmarking Strategy). The full harness
-// (task-884f): 512 seeds per variable pool (original a-h plus arbitrary string
-// names), over <= 8 named variables covering all five constructors, with
+// enumerator (Design § Testing and Benchmarking Strategy).
+// The full harness: 512 seeds per variable pool (original a-h plus arbitrary
+// string names), over <= 8 named variables covering all five constructors, with
 //   - the verdict triangle (getSolution sat ⟺ getAllSolutions nonempty ⟺
 //     reference count > 0),
 //   - verdict stability over three fresh solves of the same expression and
@@ -38,9 +38,8 @@ import {
   referenceModels,
 } from './helpers';
 
-// The fixed battery from the task-2 reference-enumerator harness
-// (test/helpers.spec.ts): hand-computed model sets over the constructors,
-// including the degenerate zero-variable corners.
+// Fixed battery of hand-computed model sets over the constructors, including
+// the degenerate zero-variable corners.
 const battery: ReadonlyArray<readonly [string, BooleanExpr]> = [
   ['and()', and()],
   ['or()', or()],
@@ -51,7 +50,7 @@ const battery: ReadonlyArray<readonly [string, BooleanExpr]> = [
   ["xor('a','b')", xor('a', 'b')],
 ];
 
-// ≥ 500 seeded formulas (the Phase-2 gate), over ≤ 8 named
+// ≥ 500 seeded formulas (the enforced floor of this corpus), over ≤ 8 named
 // variables so the naive reference enumerator's 2^k bound stays at 256 max.
 const SEED_COUNT = 512;
 const REPEATED_SOLVES = 3;

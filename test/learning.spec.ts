@@ -511,7 +511,11 @@ describe('Solver learned clauses and non-chronological search', () => {
     assert.ok(solver.stats.learnedClauses > 0, 'conflicts alone do not prove CDCL learning');
     const live = solver.clauses.filter((clause) => clause.learned);
     assert.strictEqual(solver.stats.learnedClausesCurrent, live.length);
-    assert.strictEqual(solver.stats.learnedClauses, live.length, 'no reduction in this phase');
+    assert.strictEqual(
+      solver.stats.learnedClauses,
+      live.length,
+      'no learned clauses were reduced in this run',
+    );
     const keys = solver.clauses.map((clause) => [...clause.lits].sort((a, b) => a - b).join(','));
     assert.strictEqual(new Set(keys).size, keys.length);
     assertReasonGraph(solver);

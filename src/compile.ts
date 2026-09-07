@@ -1,9 +1,9 @@
 // Tseitin compiler: BooleanExpr AST → CompiledCnf. Runs exactly once per
-// solver instance, inverting the v1 getVariables-per-node pathology by
-// construction. Literal encoding is MiniSat-style (lit = 2*v + isNeg), so
-// negation is free and `not` nodes allocate nothing. The compiler produces
-// literals; solver.ts imports these helpers — never the other way around.
-// See Design § Formula Frontend and Tseitin Compilation.
+// solver instance, so variable collection and gate allocation are paid once
+// per formula, never per search node. Literal encoding is MiniSat-style
+// (lit = 2*v + isNeg), so negation is free and `not` nodes allocate nothing.
+// The compiler produces literals; solver.ts imports these helpers — never the
+// other way around. See Design § Formula Frontend and Tseitin Compilation.
 
 import { getVariables, isVariable, Value } from './expr.js';
 import type { BooleanExpr, Variable } from './expr.js';
@@ -32,11 +32,12 @@ export const litValue = (lit: number, assigns: Int8Array): Value => {
 // Clause database types
 // ---------------------------------------------------------------------------
 
-// One clause. Object identity is meaningful: watch lists, occurrence lists,
-// and `reason` hold clause references (never indices), so Phase-3 clause
-// deletion cannot invalidate them. Units are detected structurally
-// (`lits.length === 1`); they are enqueued at level 0 at solver construction
-// and never enter watch lists.
+// One clause. Object identity is meaningful: watch lists and `reason` hold
+// clause references (never indices), so clause deletion can never invalidate
+// them. Units are detected structurally (`lits.length === 1`); they are
+// enqueued at level 0 at solver construction and never enter watch lists.
+// Compiled clauses are born with solver-side defaults (`learned: false`,
+// `activity: 0`, `lbd: 0`); only learning/reduction bookkeeping writes them.
 export interface Clause {
   lits: number[];
   learned: boolean;
@@ -49,6 +50,8 @@ export interface CompiledCnf {
   numVars: number;
   numNamedVars: number;
   clauses: Clause[];
+  // Names → indices translate assumptions into literals; indices → names
+  // project models back onto variable names.
   nameToIndex: Map<string, number>;
   indexToName: string[];
   // Set when compilation produces (or normalization reduces to) the empty
@@ -79,8 +82,9 @@ export function normalizeClauseLits(rawLits: readonly number[]): number[] | null
 // Compilation
 // ---------------------------------------------------------------------------
 
-// Internal deterministic instrumentation of REAL compiler invocations. Never
-// re-exported by index.ts; recursive node compilation does not increment it.
+// Internal deterministic instrumentation of real compiler invocations,
+// consumed by compile-once tests. Never re-exported by index.ts; recursive
+// node compilation does not increment it.
 export const compileCount = { value: 0 };
 
 // A node that is itself a literal: a variable or a negated variable.
@@ -115,6 +119,9 @@ export function compile(expr: BooleanExpr): CompiledCnf {
   let levelZeroUnsat = false;
   let nextAux = numNamedVars;
 
+  // Cannot miss: every name reaching here came from the same getVariables(expr)
+  // collection that built nameToIndex. The guard replaces what would otherwise
+  // be a non-null assertion (forbidden by the project's lint rules).
   const indexOfName = (name: Variable): number => {
     const index = nameToIndex.get(name);
     if (index === undefined) {

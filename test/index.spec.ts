@@ -1,25 +1,23 @@
-// Public behavior tests, ported to the v2 API (task-e476). Per-case
+// Public behavior tests, ported to the v2 API. Per-case
 // dispositions follow Design § Testing and Benchmarking Strategy:
 //
 //   - Exact expected models: and, not, xor, the complex worked example, and
 //     the unsolvable case (asserted with deepStrictEqual against `Value`).
-//   - Rewritten as forced-variable + reference-validity + model-shape
+//   - Verified with forced-variable + reference-validity + model-shape
 //     assertions: or (PLE forces {a: TRUE, b: TRUE}) and implies (the trap:
 //     PLE yields {a: FALSE, b: TRUE}, not v1's FALSE-first {a: FALSE,
 //     b: FALSE} — both models are valid).
 //   - Hypergraph: stats oracle (calibrated decisions, propagations >= 10),
 //     forced subset {a, b, c, g, h} TRUE, and reference validity; the
-//     don't-care region legitimately differs from v1 under PLE. The wall-clock
-//     `slowTime > fastTime * 1000n` assertion was deleted with v1; the
-//     hypergraph is proven by the stats oracle instead.
-//   - Enumeration (describe('getAllSolutions')): the v1
-//     `bruteForceAllSolutions` tests ported with order-insensitive
+//     don't-care region legitimately varies under PLE, and the hypergraph
+//     is proven by the stats oracle rather than a wall-clock measurement.
+//   - Enumeration (describe('getAllSolutions')): order-insensitive
 //     comparison (assertModelListsEqual), per-model shape assertions,
 //     count cross-checks against the reference enumerator, the empty-formula
 //     corner cases (and() -> [{}], or() -> []), the PLE-disabled regression
 //     (or('a','b') must enumerate all three models — PLE would pin {a: TRUE,
 //     b: TRUE} first and silently drop two), and the 40-variable smoke test
-//     (v1's array-length-cap regression class).
+//     (no array-length-cap regression class).
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
@@ -36,20 +34,20 @@ import {
   referenceModels,
 } from './helpers';
 
-// Decisions remaining after the hypergraph's UP+PLE fixpoint, calibrated in
-// the previous task (task-101f, HYPERGRAPH_DECISIONS in test/solver.spec.ts).
-// The pinned global-sweep PLE assigns the whole chain except the two
-// zero-occurrence don't-cares e and n (every clause mentioning them is
-// satisfied before they could become pure), so the search loop decides those
-// two FALSE-first. The owner-approved Design § Testing correction in
-// task-f746 now requires this actual Phase-1 value, not the former zero claim.
+// Decisions remaining after the hypergraph's UP+PLE fixpoint, calibrated
+// against the pinned reference implementation (HYPERGRAPH_DECISIONS in
+// test/solver.spec.ts). The pinned global-sweep PLE assigns the whole chain
+// except the two zero-occurrence don't-cares e and n (every clause mentioning
+// them is satisfied before they could become pure), so the search loop
+// decides those two FALSE-first. Design § Testing requires the actual value
+// here, not zero.
 const HYPERGRAPH_DECISIONS = 2;
 
-// v1's `selectNextVar` ported to the v2 `variablePriority` contract per
-// Design § Branching Heuristics: `assignments[var] === Value.UNSET` checks
-// become `=== undefined` against the partial record, and the candidates
-// filter is replaced by the `unassigned` parameter. The "rank by satisfied
-// parents, branch TRUE on ready nodes" logic is otherwise unchanged.
+// v2 `variablePriority` counterpart of v1's `selectNextVar` (Design §
+// Branching Heuristics): `assignments[var] === Value.UNSET` maps to
+// `=== undefined` against the partial record, and the candidates filter maps
+// to the `unassigned` parameter. The "rank by satisfied parents, branch TRUE
+// on ready nodes" logic is unchanged.
 const relationships = hypergraphPrereqs.reduce((memo, [target, prereq]) => {
   const connectedVars = memo.get(prereq);
   if (connectedVars === undefined) {
@@ -197,8 +195,7 @@ describe('getSolution', () => {
         const model = getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE }, stats });
 
         assert.ok(model !== null);
-        // Stats oracle replaces the deleted wall-clock assertion: with
-        // { h: TRUE } asserted at level 0, unit propagation forces
+        // With { h: TRUE } asserted at level 0, unit propagation forces
         // {h, b, g, a, c} and the pinned global-sweep PLE assigns the rest of
         // the chain; only the two zero-occurrence don't-cares remain for the
         // search loop (see HYPERGRAPH_DECISIONS above).
@@ -214,8 +211,8 @@ describe('getSolution', () => {
         for (const required of ['a', 'b', 'c', 'g', 'h']) {
           assert.strictEqual(model[required], Value.TRUE);
         }
-        // The don't-care region legitimately differs from v1 under PLE;
-        // reference evaluation of the full model is the ground truth.
+        // The don't-care region legitimately varies under PLE; reference
+        // evaluation of the full model is the ground truth.
         assert.strictEqual(expressionValue(hypergraphFormula(), model), Value.TRUE);
       });
 
@@ -462,7 +459,6 @@ describe('getAllSolutions', () => {
 
   describe('unsolvable', () => {
     it('returns [] for the original v1 unsolvable worked example', () => {
-      // Exact bruteForceAllSolutions case from 7037f82^:test/index.spec.ts.
       const formula = and(
         not('b'),
         or('a', 'b'),
@@ -495,8 +491,8 @@ describe('getAllSolutions', () => {
     });
 
     it('enumerates a 40-variable chain without an array-length cap', () => {
-      // v1's bruteForceAllSolutions materialized all 2^n assignments and
-      // threw RangeError at n >= 32; the chain of 40 implication clauses has
+      // A brute-force enumerator materializes all 2^n assignments and throws
+      // RangeError past n = 32; the chain of 40 implication clauses has
       // exactly 41 models (a TRUE prefix), so this is output-sensitive: one
       // solve per model, no 2^n materialization.
       const prereqClauses: Array<ReturnType<typeof implies>> = [];

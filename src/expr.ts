@@ -1,8 +1,11 @@
 // Formula frontend: BooleanExpr AST types, constructors, and variable
-// collection. Frozen across the v1 → v2 transition.
+// collection. Frozen by contract: it is the foundation of the public API, so
+// changing this module's types breaks every consumer.
 
 export type Variable = string;
 
+// Numeric values are part of the frozen public contract; UNSET (-1) doubles
+// as the solver's unassigned sentinel in its Int8Array assignment arrays.
 export enum Value {
   UNSET = -1,
   FALSE = 0,
@@ -20,6 +23,10 @@ interface OrExpr {
 interface NotExpr {
   not: Variable | BooleanExpr;
 }
+// A node is a bare string (a variable leaf) or an object carrying exactly one
+// of the operator keys `and`/`or`/`not`. Those keys are mutually exclusive,
+// so `'and' in expr` / `'or' in expr` / `'not' in expr` exhaustively dispatch;
+// compound nodes may nest arbitrarily.
 export type BooleanExpr = AndExpr | OrExpr | NotExpr;
 
 // All variables or subexpressions must be true.
@@ -39,10 +46,16 @@ export const implies = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): B
 export const xor = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr =>
   or(and(a, not(b)), and(not(a), b));
 
+// Strings are always variable leaves and compound nodes are always objects,
+// so a typeof check alone tells them apart — the AST's whole disambiguation
+// rule, relied on by the compiler.
 export function isVariable(x: unknown): x is Variable {
   return typeof x === 'string';
 }
 
+// Accumulates into `variables` and returns it, so callers collect the
+// variable set once per formula instead of merging per-subtree results;
+// the recursion mirrors expression nesting.
 export function getVariables(expr: BooleanExpr, variables = new Set<Variable>()): Set<Variable> {
   if ('and' in expr) {
     for (const subExpr of expr.and) {

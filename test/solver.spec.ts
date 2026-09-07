@@ -460,14 +460,13 @@ describe('Solver scoped pure-literal elimination', () => {
 // Decision-count ceiling for the 25-variable prereq chain (calibrated below):
 // FALSE-first on the first prereq lets unit propagation cascade through the
 // whole chain, so the chain solves with exactly one decision.
-const CHAIN_DECISION_BOUND = 4; // calibrated on Phase-1 implementation
+const CHAIN_DECISION_BOUND = 4; // calibrated against the pinned reference implementation
 
-// Decisions remaining after the hypergraph's UP+PLE fixpoint. Calibrated on
-// Phase-1 implementation: the pinned global-sweep PLE (purity over
-// unsatisfied clauses only) assigns d, f, i, s, j, r, k, q, l, p, m, o, but
-// `e` and `n` become zero-occurrence don't-cares (every clause mentioning
-// them is satisfied before they could become pure), so the search loop
-// decides those two FALSE-first.
+// Decisions remaining after the hypergraph's UP+PLE fixpoint. The pinned
+// global-sweep PLE (purity over unsatisfied clauses only) assigns d, f, i, s,
+// j, r, k, q, l, p, m, o, but `e` and `n` become zero-occurrence don't-cares
+// (every clause mentioning them is satisfied before they could become pure),
+// so the search loop decides those two FALSE-first.
 const HYPERGRAPH_DECISIONS = 2;
 
 describe('Solver CDCL search loop', () => {
