@@ -2,26 +2,31 @@
 
 `@divmain/sat` — a zero-dependency SAT solver library (TypeScript, ESM, Node).
 
-## Active rewrite: read the plan first
+## v2 release: read the plan first
 
-The repo is mid-migration from v1 (brute-force "DPLL") to v2 (MiniSat-style CDCL), tracked as **Janus plan `plan-7748`** — the full design doc lives at `.janus/plans/plan-7748.md`. Code comments referencing "Design § ..." point into that file. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. The quarantined v1 solver (`src/legacy.ts`) was deleted at the API-rewire task (task-e476); do not resurrect v1 entry points.
+The v2 MiniSat-style CDCL core and all three public solving APIs are implemented. Release/final acceptance is tracked by **Janus plan `plan-7748`** — the full design doc lives at `.janus/plans/plan-7748.md`. Code comments referencing "Design § ..." point into that file. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. The quarantined v1 solver (`src/legacy.ts`) was deleted at the API-rewire task (task-e476); do not resurrect v1 entry points.
 
-Current module layout (transitional):
+Module layout:
 
 - `src/expr.ts` — frozen formula frontend (`and`/`or`/`not`/`implies`/`xor`, `Value`, `getVariables`)
 - `src/compile.ts` — Tseitin compiler, `BooleanExpr → CompiledCnf`; literal helpers (MiniSat-style `lit = 2*v + isNeg`) live here; `solver.ts` imports them, never the reverse
-- `src/solver.ts` — CDCL core under construction (occurrence-list propagation done; search/learning added per phase)
-- `src/index.ts` — public API; re-exports `expr.ts` + `SolverStats`/`VariablePriority` (defined in `solver.ts`), defines `SolveOptions`, and implements `getSolution(expr, options?)`; `getAllSolutions`/`createSolver` land in later phases
+- `src/solver.ts` — iterative CDCL core: watched propagation, first-UIP learning/backjumping, VSIDS/phase saving, Luby restarts, LBD-protected reduction, persistent enumeration, and replayable per-call assumption prefixes
+- `src/index.ts` — exact public API: selective formula/type exports, `SolverStats`/`VariablePriority` (defined in `solver.ts`), `SolveOptions`/`SatSolver`, `getSolution`, `getAllSolutions`, and `createSolver`. `Solver`, `getVariables`, `isVariable`, and compiler instrumentation such as `compileCount` stay internal
 
 ## Commands
 
-- `npm test` — full suite (`node:test` via tsx, discovers `./test/**/*.spec.ts`, prints coverage)
-- `npx tsx --test './test/compile.spec.ts'` — single test file; add `--test-name-pattern '<name>'` for one test
+- `npm ci` — install the locked development tools in a fresh checkout
+- `npm test` — full suite (`node:test` via tsx, discovers `./test/**/*.spec.ts`, prints coverage); allow several minutes for the unchanged 59,049-model enumeration stress, not a 120-second tool timeout
+- `npx tsx --test './test/compile.spec.ts'` — single test file; put `--test-name-pattern '<name>'` before the file argument for one test
 - `npm run check` — biome lint + format check; `npm run fix` — auto-apply
 - `npm run build` — `tsc` (compiles `src/` only; tests are tsx-run, not compiled)
-- `npm run bench` — **not yet implemented** (`test/bench.ts` arrives in a later Phase-1 task); don't expect it to run
+- `npm run bench` — authenticated single-shot comparisons against immutable Phase-1/2/3 Git evidence; writes only `test/phase4-benchmark.json` and `.md`, never the historical reports or working `baseline.json`. Source/fixture hashes identify measurements; recorded HEAD is context only. Does not benchmark incremental solving or enumeration
+- `npx --no-install tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/*.ts test/*.ts` — additional strict source/test typecheck (the ordinary build compiles source only)
 
 Checkpoint gate after any task: `npm run build`, `npm run check`, `npm test` all green.
+Release gates additionally include `npm run bench`, `git diff --check`, explicit **≥90% line coverage for each of compile.ts and solver.ts** from the test reporter, and an installed `npm pack` tarball exercised under plain Node ESM plus strict TypeScript, including README examples. `npm pack` does not build automatically; use fresh install/build state so stale ignored `dist/` cannot mask packaging failures. Keep tarballs outside the repository (and ignored).
+
+Both the full test suite and the benchmark authenticate Git history. Use a full checkout containing `7037f823d192dc3cf2dc9119c8063781e143113c`, `ade64e558ee47c60ae7b4b2cc29f861ccfb245cf`, and `53a059c761e9b3591b8513a03309699ecef0c889`; a shallow clone/source archive is insufficient. Never add a fallback to mutable baseline files or invent missing historical measurements. Fresh candidate validation must include intended uncommitted source changes, exclude unowned changes/secrets, and isolate `node_modules`/`dist`; report any overlay honestly rather than claiming it is Git-clean.
 
 ## Conventions that differ from defaults
 
@@ -37,5 +42,7 @@ Checkpoint gate after any task: `npm run build`, `npm run check`, `npm test` all
 - **Zero runtime dependencies, permanently** — PRNG, DIMACS parsing, benchmarking are hand-rolled in `test/`.
 - **No recursion in `solver.ts`** (search depth must not hit the JS stack); compiler recursion over expression nesting is accepted.
 - **No wall-clock assertions in unit tests** — performance is proven via `SolverStats` oracles (e.g. `decisions === 0`, `learnedClauses > 0`), never timers.
+- Keep fixed fixtures/property batteries/stress sizes/conflict caps; the hypergraph oracle is **2 decisions, 16 propagations, 0 conflicts** (batch PLE leaves two ordinary named don't-cares), not zero decisions. PHP(7,6)/(8,7) benchmark caps remain **7230/36270**; a budget exception is a failure, never UNSAT evidence. Preserve frozen Phase-2/3 artifacts and expose regressions honestly.
 - Determinism: sorted variable indexing, index-ordered tie-breaking, fixed default polarities.
 - Pure-literal elimination is scoped to single-shot `getSolution` only — enabling it for enumeration or incremental solving is unsound (worked counterexamples in Design § Solver Core).
+- Incremental assumptions are validated/snapshotted before cached UNSAT, replayed before decisions **and SAT**, and cancelled in `finally`. Call-local UNSAT must never poison the permanent base-UNSAT cache. Stats outputs reset before validation: per-call work/new learned admissions plus the absolute live learned count; retained lifetime core accounting/reduction cadence is separate. Initial units are enqueued during creation, outside incremental per-call measurements.

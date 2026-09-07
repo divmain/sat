@@ -31,6 +31,21 @@ export interface SolveOptions {
   stats?: SolverStats | undefined;
 }
 
+export interface SatSolver {
+  /**
+   * Solve under this call's assumptions, then discard its non-root assignments.
+   * Unknown names (even UNSET) and non-Value values throw on EVERY call.
+   *
+   * Stats are zeroed before validation. Work counters, including learnedClauses
+   * (new admissions), cover this invocation only, also when a callback throws.
+   * learnedClausesCurrent is the absolute retained live learned population, NOT
+   * a delta: it can exceed this call's learnedClauses. Creating the solver and
+   * enqueueing its initial units precede these per-call measurements; subsequent
+   * root implications count when actually enqueued, never replayed or recounted.
+   */
+  solve(assumptions?: VariableAssignments, stats?: SolverStats): VariableAssignments | null;
+}
+
 const zeroStats = (stats: SolverStats): void => {
   stats.decisions = 0;
   stats.propagations = 0;
@@ -110,4 +125,24 @@ export function getAllSolutions(expr: BooleanExpr, options?: SolveOptions): Vari
     stats: options?.stats,
   });
   return solver.enumerateModels();
+}
+
+/**
+ * Compile once and solve repeatedly with independent per-call assumptions.
+ * Base clauses, sound learned clauses, saved phases and VSIDS survive calls;
+ * pure-literal elimination is disabled because its root pins are not sound
+ * under changing assumptions. Returned models are independent named-only records.
+ * Calls on the same handle are synchronous and cannot be reentered from a hook.
+ */
+export function createSolver(
+  expr: BooleanExpr,
+  options?: { variablePriority?: VariablePriority | undefined },
+): SatSolver {
+  const solver = new Solver(compile(expr), {
+    variablePriority: options?.variablePriority,
+    enablePle: false,
+  });
+  return {
+    solve: (assumptions, stats) => solver.solveAssuming(assumptions, stats),
+  };
 }

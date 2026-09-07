@@ -28,7 +28,7 @@ export const COUNTERS = [
 export function comparisonCells(
   reference: number | undefined,
   current: number | undefined,
-  currentPhase = 'Phase2',
+  currentPhase = 'Phase4',
 ): string[] {
   for (const value of [reference, current]) {
     if (value !== undefined) {
@@ -84,6 +84,13 @@ export const PHASE2_REFERENCE: ReferenceIdentity = {
   sha256: '830c4bcc5281b2534032de5fa01b5da17f971c1c877999326b18452da5aa7cd4',
 };
 
+export const PHASE3_REFERENCE: ReferenceIdentity = {
+  commit: '53a059c761e9b3591b8513a03309699ecef0c889',
+  path: 'test/phase3-benchmark.json',
+  gitBlob: 'd2eb15f01b60a8e639268a94a8081c30570ec6fa',
+  sha256: 'cefb8e62794156441b1154ee7be82a7642446e19bde40ba33d3005a1badd146d',
+};
+
 export interface Implementation {
   head: string;
   sourceSha256: Record<string, string>;
@@ -113,11 +120,21 @@ export interface BenchmarkReferences {
     implementation: Implementation;
     entries: Phase2Entry[];
   };
+  phase3: {
+    references: {
+      phase1: ReferenceIdentity;
+      phase2: ReferenceIdentity & {
+        provenance: Pick<BenchmarkReferences['phase2'], 'reference' | 'implementation'>;
+      };
+    };
+    implementation: Implementation;
+    entries: Array<Phase2Entry & { phase3: Partial<SolverStats> }>;
+  };
 }
 
 export interface BenchmarkResult extends BenchmarkFixture {
   verdict: 'SAT' | 'UNSAT';
-  phase3: SolverStats;
+  phase4: SolverStats;
 }
 
 export const sha256 = (content: string | Buffer): string =>
@@ -125,28 +142,61 @@ export const sha256 = (content: string | Buffer): string =>
 
 // Git is the only reference reader. No fallback to HEAD, working files, or new measurements.
 export function loadReferences(readGit: (args: string[]) => Buffer): BenchmarkReferences {
-  const contents = [PHASE1_REFERENCE, PHASE2_REFERENCE].map((reference, index) => {
-    const phase = `Phase-${index + 1}`;
-    assert.equal(
-      readGit(['rev-parse', '--verify', `${reference.commit}^{commit}`])
-        .toString('utf8')
-        .trim(),
-      reference.commit,
-      `${phase} reference commit mismatch`,
-    );
-    const content = readGit(['show', `${reference.commit}:${reference.path}`]);
-    const blob = createHash('sha1')
-      .update(`blob ${content.length}\0`)
-      .update(content)
-      .digest('hex');
-    assert.equal(blob, reference.gitBlob, `${phase} reference blob mismatch`);
-    assert.equal(sha256(content), reference.sha256, `${phase} reference SHA-256 mismatch`);
-    return content.toString('utf8');
-  });
+  const contents = [PHASE1_REFERENCE, PHASE2_REFERENCE, PHASE3_REFERENCE].map(
+    (reference, index) => {
+      const phase = `Phase-${index + 1}`;
+      assert.equal(
+        readGit(['rev-parse', '--verify', `${reference.commit}^{commit}`])
+          .toString('utf8')
+          .trim(),
+        reference.commit,
+        `${phase} reference commit mismatch`,
+      );
+      const content = readGit(['show', `${reference.commit}:${reference.path}`]);
+      const blob = createHash('sha1')
+        .update(`blob ${content.length}\0`)
+        .update(content)
+        .digest('hex');
+      assert.equal(blob, reference.gitBlob, `${phase} reference blob mismatch`);
+      assert.equal(sha256(content), reference.sha256, `${phase} reference SHA-256 mismatch`);
+      return content.toString('utf8');
+    },
+  );
   // The authenticated bytes fix these historical schemas, including absent counters.
   const phase1 = JSON.parse(contents[0]) as BenchmarkReferences['phase1'];
   const phase2 = JSON.parse(contents[1]) as BenchmarkReferences['phase2'];
+  const phase3 = JSON.parse(contents[2]) as BenchmarkReferences['phase3'];
+  const references = { phase1, phase2, phase3 };
+  assertReferenceChain(references);
+  for (const [phase, reference, implementation] of [
+    ['Phase-2', PHASE2_REFERENCE, phase2.implementation],
+    ['Phase-3', PHASE3_REFERENCE, phase3.implementation],
+  ] as const) {
+    for (const [path, hash] of Object.entries(implementation.sourceSha256)) {
+      assert.equal(
+        sha256(readGit(['show', `${reference.commit}:${path}`])),
+        hash,
+        `${phase} source provenance mismatch: ${path}`,
+      );
+    }
+  }
+  return references;
+}
+
+// Decoded agreement is separate from byte authentication, not a substitute for it.
+export function assertReferenceChain({ phase1, phase2, phase3 }: BenchmarkReferences): void {
   assert.deepEqual(phase2.reference, PHASE1_REFERENCE, 'Phase-2 reference provenance disagreement');
+  assert.deepEqual(
+    phase3.references,
+    {
+      phase1: PHASE1_REFERENCE,
+      phase2: {
+        ...PHASE2_REFERENCE,
+        provenance: { reference: phase2.reference, implementation: phase2.implementation },
+      },
+    },
+    'Phase-3 reference provenance disagreement',
+  );
   const names = phase2.entries.map((entry) => entry.name);
   assert.equal(new Set(names).size, names.length, 'duplicate Phase-2 instance');
   for (const name of Object.keys(phase1)) {
@@ -159,14 +209,11 @@ export function loadReferences(readGit: (args: string[]) => Buffer): BenchmarkRe
       `Phase-1 counters disagree with Phase-2 evidence: ${entry.name}`,
     );
   }
-  for (const [path, hash] of Object.entries(phase2.implementation.sourceSha256)) {
-    assert.equal(
-      sha256(readGit(['show', `${PHASE2_REFERENCE.commit}:${path}`])),
-      hash,
-      `Phase-2 source provenance mismatch: ${path}`,
-    );
-  }
-  return { phase1, phase2 };
+  assert.deepEqual(
+    phase3.entries.map(({ phase3: _phase3, ...entry }) => entry),
+    phase2.entries,
+    'Phase-3 evidence chain disagreement with Phase 2',
+  );
 }
 
 export function assertSourcesUnchanged(
@@ -223,6 +270,7 @@ export function verifyFixtures(
   fixtures: BenchmarkFixture[],
   references: BenchmarkReferences,
 ): void {
+  assertReferenceChain(references);
   assert.deepEqual(
     fixtures.map(({ name }) => name).sort(),
     references.phase2.entries.map(({ name }) => name).sort(),
@@ -236,13 +284,7 @@ export function verifyFixtures(
   }
 }
 
-export function assertBenchmarkResult(
-  expr: BooleanExpr,
-  fixture: BenchmarkFixture,
-  model: VariableAssignments | null,
-  stats: SolverStats,
-  expectedVerdict: 'SAT' | 'UNSAT',
-): void {
+function assertBenchmarkCounters(fixture: BenchmarkFixture, stats: SolverStats): void {
   for (const counter of COUNTERS) {
     assert.ok(
       Object.hasOwn(stats, counter) && Number.isSafeInteger(stats[counter]) && stats[counter] >= 0,
@@ -252,6 +294,16 @@ export function assertBenchmarkResult(
   if (stats.conflicts >= fixture.maxConflicts) {
     throw new Error(`${fixture.name}: maximum conflict budget exhausted (${fixture.maxConflicts})`);
   }
+}
+
+export function assertBenchmarkResult(
+  expr: BooleanExpr,
+  fixture: BenchmarkFixture,
+  model: VariableAssignments | null,
+  stats: SolverStats,
+  expectedVerdict: 'SAT' | 'UNSAT',
+): void {
+  assertBenchmarkCounters(fixture, stats);
   if (model !== null) {
     assertModelShape(model, expr);
     assert.equal(expressionValue(expr, model), Value.TRUE, `${fixture.name}: model falsifies AST`);
@@ -267,7 +319,7 @@ export function assertBenchmarkResult(
   assert.equal(
     model === null ? 'UNSAT' : 'SAT',
     expectedVerdict,
-    `${fixture.name}: verdict disagreement with pinned Phase-2 evidence`,
+    `${fixture.name}: verdict disagreement with pinned Phase-2/3 evidence`,
   );
   if (fixture.name === 'hypergraph') {
     assert.deepEqual(
@@ -289,43 +341,46 @@ export const table = (headers: string[], rows: (string | number)[][]): string =>
     ...rows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n');
 
-export function createPhase3Report(
+export function createPhase4Report(
   references: BenchmarkReferences,
   implementation: Implementation,
   results: BenchmarkResult[],
 ) {
   verifyFixtures(
-    results.map(({ verdict: _verdict, phase3: _phase3, ...fixture }) => fixture),
+    results.map(({ verdict: _verdict, phase4: _phase4, ...fixture }) => fixture),
     references,
   );
-  const entries = results.map(({ phase3, ...result }) => {
-    const previous = references.phase2.entries.find(({ name }) => name === result.name);
+  const entries = results.map(({ phase4, ...result }) => {
+    const previous = references.phase3.entries.find(({ name }) => name === result.name);
     assert.ok(previous);
     assert.equal(result.verdict, previous.verdict, `${result.name}: verdict disagreement`);
-    for (const counter of COUNTERS) {
-      assert.ok(
-        Object.hasOwn(phase3, counter) &&
-          Number.isSafeInteger(phase3[counter]) &&
-          phase3[counter] >= 0,
-        `${result.name}: missing or invalid ${counter}`,
-      );
-    }
+    assertBenchmarkCounters(result, phase4);
     return {
       ...result,
-      phase1: references.phase1[result.name] ?? null,
+      phase1: previous.phase1,
       phase2: previous.phase2,
-      phase3,
+      phase3: previous.phase3,
+      // Store only the six counters, in a fixed order, never incidental solver fields.
+      phase4: {
+        decisions: phase4.decisions,
+        propagations: phase4.propagations,
+        conflicts: phase4.conflicts,
+        restarts: phase4.restarts,
+        learnedClauses: phase4.learnedClauses,
+        learnedClausesCurrent: phase4.learnedClausesCurrent,
+      },
     };
   });
   const phases = [
     ['phase1', 'Phase1'],
     ['phase2', 'Phase2'],
+    ['phase3', 'Phase3'],
   ] as const;
   const regressions = entries.flatMap((entry) =>
     phases.flatMap(([key, phase]) =>
       (['decisions', 'propagations', 'conflicts'] as const).flatMap((counter) => {
         const before = entry[key]?.[counter];
-        const after = entry.phase3[counter];
+        const after = entry.phase4[counter];
         return before !== undefined && after > before
           ? [
               {
@@ -342,26 +397,29 @@ export function createPhase3Report(
     ),
   );
   const notes = [
-    'Manual counter comparison only, not a speedup gate or task-completion claim. This single-shot suite does not measure persistent enumeration.',
+    'Phase-4 release single-shot evidence only: manual counter comparison, not a speedup gate or task-completion claim. This suite does not measure createSolver performance or persistent enumeration.',
     'Higher decisions, propagations, or conflicts are explicitly listed as count regressions against each reference. No blanket performance gain, Phase-1 infeasibility, or orders-of-magnitude improvement is claimed.',
     'Phase 1 contains six completed rows, no budget-exhausted rows, and no PHP(7,6)/PHP(8,7) measurements. Phase 1 did not record learnedClausesCurrent, fixture hashes, or verdicts. Missing measurements remain missing, not zero, timeouts, or infinite improvements.',
-    'Fixture verification requires exact agreement with the authenticated Phase-2 AST/constant-assumption fingerprints, generator labels, assumptions, coverage, and conflict caps. The original Phase-1 runner and generator configuration was checked in Git history; no new Phase-1 measurements are invented.',
+    'Fixture verification requires exact agreement with the authenticated Phase-2/3 AST/constant-assumption fingerprints, generator labels, assumptions, coverage, and conflict caps. The original Phase-1 runner and generator configuration was checked in Git history; no new historical measurements are invented.',
     'The original six rows retain maxConflicts=200000. Random 3-SAT retains 20 variables, 85 clauses, and seeds 42/43/44. PHP(7,6)/PHP(8,7) retain caps 7230/36270, exactly 10x the historical calibrations 723/3627; caps are not recalibrated.',
-    'Every run uses fresh compilation, the default brancher, and enablePle=true. Every SAT model passes independent assertModelShape/expressionValue and strict own numeric constant-assumption checks. Verdicts must agree with Phase 2; PHP UNSAT also follows from the pigeonhole principle. Budget exhaustion throws, never becomes UNSAT evidence.',
+    'Every run uses fresh compilation and an internal Solver, mirroring single-shot getSolution with the default brancher and enablePle=true plus an explicit conflict cap. Every SAT model passes independent assertModelShape/expressionValue and strict own numeric constant-assumption checks. Verdicts must agree with Phases 2 and 3; PHP UNSAT also follows from the pigeonhole principle. Budget exhaustion throws, never becomes UNSAT evidence.',
     'Hypergraph must retain exactly 2 decisions, 16 propagations, and 0 conflicts. The PHP rows must engage learning. Passing fixed budgets proves only those budgets.',
-    'Ratios are reference/Phase3, rounded to two decimals, not wall-time speedups. A zero denominator is n/a, with 0/0 labelled parity. Learning and restart counters report activity, not speedup; more or fewer of these counters alone is not a performance verdict.',
-    'Both references are authenticated by full commit, Git blob, and SHA-256. Phase-2 provenance is preserved verbatim, including its recorded HEAD and working-byte hashes; those hashes are also checked against files at its committed reference.',
+    'Ratios are reference/Phase4, rounded to two decimals, not wall-time speedups. A zero denominator is n/a, with 0/0 labelled parity. Learning and restart counters report activity, not speedup; more or fewer of these counters alone is not a performance verdict.',
+    'learnedClausesCurrent is the final live learned-clause count, not peak or total memory. The default reduction threshold is not lowered for this suite; these six counters do not count reduction events or establish default-reduction engagement. Phase-3 single-shot rows never reached its 10000-admission default threshold. Protected clauses and permanent enumeration blockers preclude any implied total-memory bound; enumeration is outside this suite.',
+    'All three references are independently authenticated by full artifact commit, Git blob, and SHA-256. Phase-3 embedded Phase-1/2 provenance is preserved verbatim and checked against the independently authenticated prior artifacts, including counters, fixtures, and verdicts. Phase-2/3 implementation hashes are checked against their ARTIFACT commits, not their recorded HEADs (context only).',
     'Current HEAD is context only. sourceSha256 fingerprints actual working bytes before implementation imports; hashes and file versions are checked again before recording. File versions are not stored. fixtureSha256 hashes UTF-8 JSON.stringify({ expr, assumptions }) before compilation and is checked again after solving.',
-    'Working-tree baseline.json and Phase-2 JSON/Markdown/review files are never reference inputs or output targets. Only phase3-benchmark.json and phase3-benchmark.md are written. No models, timestamps, or wall times are stored; timing is console-only.',
+    'Working-tree baseline.json and frozen Phase-2/3 JSON/Markdown/review files are never reference inputs or output targets. Only phase4-benchmark.json and phase4-benchmark.md are written. No models, timestamps, or wall times are stored; timing is console-only.',
   ];
   const report = {
+    phase: 'Phase4',
+    scope: 'single-shot',
     references: {
-      phase1: PHASE1_REFERENCE,
-      phase2: {
-        ...PHASE2_REFERENCE,
+      ...references.phase3.references,
+      phase3: {
+        ...PHASE3_REFERENCE,
         provenance: {
-          reference: references.phase2.reference,
-          implementation: references.phase2.implementation,
+          references: references.phase3.references,
+          implementation: references.phase3.implementation,
         },
       },
     },
@@ -370,21 +428,25 @@ export function createPhase3Report(
     regressions,
     entries,
   };
+  const previousImplementations = [
+    ['Phase-2', references.phase2.implementation],
+    ['Phase-3', references.phase3.implementation],
+  ] as const;
   const markdown = [
-    '# Phase-3 Benchmark Comparison',
+    '# Phase-4 Release Single-Shot Benchmark Comparison',
     '',
     'Generated by `npm run bench`. No models, timestamps, or wall times are stored.',
     '',
     '## Provenance',
     '',
-    ...[PHASE1_REFERENCE, PHASE2_REFERENCE].flatMap((reference, index) => [
+    ...[PHASE1_REFERENCE, PHASE2_REFERENCE, PHASE3_REFERENCE].flatMap((reference, index) => [
       `- Phase-${index + 1} reference: \`${reference.commit}:${reference.path}\``,
       `- Verified Git blob: \`${reference.gitBlob}\`; SHA-256: \`${reference.sha256}\``,
     ]),
-    `- Phase-2 recorded HEAD (preserved, not its artifact commit): \`${references.phase2.implementation.head}\``,
-    `- Phase-2 Node: \`${references.phase2.implementation.node}\`; NODE_ENV: \`${
-      references.phase2.implementation.nodeEnv ?? '(unset)'
-    }\``,
+    ...previousImplementations.flatMap(([phase, previous]) => [
+      `- ${phase} recorded HEAD (preserved, not its artifact commit): \`${previous.head}\``,
+      `- ${phase} Node: \`${previous.node}\`; NODE_ENV: \`${previous.nodeEnv ?? '(unset)'}\``,
+    ]),
     `- Current HEAD (context, not implementation identity): \`${implementation.head}\``,
     `- Current Node: \`${implementation.node}\`; NODE_ENV: \`${
       implementation.nodeEnv ?? '(unset)'
@@ -401,7 +463,7 @@ export function createPhase3Report(
       entries.map((entry) => [
         entry.name,
         entry.verdict,
-        ...COUNTERS.map((counter) => entry.phase3[counter]),
+        ...COUNTERS.map((counter) => entry.phase4[counter]),
         entry.maxConflicts,
       ]),
     ),
@@ -411,7 +473,7 @@ export function createPhase3Report(
     regressions.length === 0
       ? 'No higher decision/propagation/conflict counts on comparable rows. Missing data remains incomparable.'
       : table(
-          ['instance', 'reference', 'counter', 'before', 'Phase3', 'delta', 'assessment'],
+          ['instance', 'reference', 'counter', 'before', 'Phase4', 'delta', 'assessment'],
           regressions.map(({ instance, reference, counter, before, after, delta }) => [
             instance,
             reference,
@@ -424,23 +486,23 @@ export function createPhase3Report(
         ),
     ...phases.flatMap(([key, phase]) => [
       '',
-      `## Phase3 Vs ${phase}`,
+      `## Phase4 Vs ${phase}`,
       '',
       table(
         [
           'instance',
           'counter',
           phase,
-          'Phase3',
-          `delta (Phase3 - ${phase})`,
-          `ratio (${phase} / Phase3)`,
+          'Phase4',
+          `delta (Phase4 - ${phase})`,
+          `ratio (${phase} / Phase4)`,
           'count change',
         ],
         entries.flatMap((entry) =>
           COUNTERS.map((counter) => [
             entry.name,
             counter,
-            ...comparisonCells(entry[key]?.[counter], entry.phase3[counter], 'Phase3'),
+            ...comparisonCells(entry[key]?.[counter], entry.phase4[counter], 'Phase4'),
           ]),
         ),
       ),
@@ -462,13 +524,15 @@ export function createPhase3Report(
     '## Current Source Fingerprints',
     '',
     table(['file', 'SHA-256 (raw working bytes)'], Object.entries(implementation.sourceSha256)),
-    '',
-    '## Preserved Phase-2 Source Fingerprints',
-    '',
-    table(
-      ['file', 'SHA-256 (historically recorded bytes)'],
-      Object.entries(references.phase2.implementation.sourceSha256),
-    ),
+    ...previousImplementations.flatMap(([phase, previous]) => [
+      '',
+      `## Preserved ${phase} Source Fingerprints`,
+      '',
+      table(
+        ['file', 'SHA-256 (historically recorded bytes)'],
+        Object.entries(previous.sourceSha256),
+      ),
+    ]),
     '',
   ].join('\n');
   return { report, markdown };

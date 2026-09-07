@@ -79,6 +79,10 @@ export function normalizeClauseLits(rawLits: readonly number[]): number[] | null
 // Compilation
 // ---------------------------------------------------------------------------
 
+// Internal deterministic instrumentation of REAL compiler invocations. Never
+// re-exported by index.ts; recursive node compilation does not increment it.
+export const compileCount = { value: 0 };
+
 // A node that is itself a literal: a variable or a negated variable.
 const isLiteralNode = (node: Variable | BooleanExpr): boolean =>
   isVariable(node) || ('not' in node && isVariable(node.not));
@@ -99,6 +103,7 @@ const isLiteralNode = (node: Variable | BooleanExpr): boolean =>
 // Each top-level conjunct that reduces to a literal is asserted with a unit
 // clause. Clauses are normalized at creation; exact duplicates are dropped.
 export function compile(expr: BooleanExpr): CompiledCnf {
+  compileCount.value += 1;
   // Named variables are collected once, sorted for determinism, and indexed
   // 0..k-1; aux variables take indices k upward.
   const indexToName = [...getVariables(expr)].sort();

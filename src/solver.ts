@@ -121,6 +121,7 @@ export class Solver {
   private startupConflict: Clause | null = null;
   private startupConflictReported = false;
   private permanentUnsat = false;
+  private incrementalCallActive = false;
 
   constructor(cnf: CompiledCnf, opts: SolverOptions = {}) {
     if (
@@ -620,7 +621,58 @@ export class Solver {
     this.assertTrailInvariant();
   }
 
-  solve(): boolean {
+  // Incremental call boundary, also used directly by internal-knob tests. Keep
+  // the core's lifetime ledger separate from caller-owned per-call outputs:
+  // resetting an output must not reset the live database or reduction cadence.
+  // The ordinary solve()/model() lifecycle remains available for enumeration.
+  solveAssuming(
+    assumptions?: VariableAssignments,
+    stats?: SolverStats,
+  ): VariableAssignments | null {
+    if (this.incrementalCallActive) {
+      // A nested call must NOT cancel the outer call's active assumption prefix.
+      throw new Error('incremental solve cannot be reentered');
+    }
+    if (stats === this.stats) {
+      throw new Error('incremental output stats must be separate from the lifetime ledger');
+    }
+    this.incrementalCallActive = true;
+    const before = { ...this.stats };
+    let reportStats = false;
+    try {
+      if (stats !== undefined) {
+        Object.assign(stats, emptyStats());
+        reportStats = true;
+      }
+      if (this.enablePle) {
+        throw new Error('incremental solving requires enablePle: false');
+      }
+      // Complete validation before touching the call's trail, even if solve()
+      // will short-circuit permanent UNSAT. Values/order are read exactly once.
+      const ordered = this.translateAssumptions(assumptions);
+      return this.solve(ordered) ? this.model() : null;
+    } finally {
+      // Project BEFORE undoing the model; cleanup also runs on validation or
+      // hook errors. Never publish into arbitrary setters before root cleanup.
+      try {
+        this.cancelUntil(0);
+        if (stats !== undefined && reportStats) {
+          Object.assign(stats, {
+            decisions: this.stats.decisions - before.decisions,
+            propagations: this.stats.propagations - before.propagations,
+            conflicts: this.stats.conflicts - before.conflicts,
+            restarts: this.stats.restarts - before.restarts,
+            learnedClauses: this.stats.learnedClauses - before.learnedClauses,
+            learnedClausesCurrent: this.stats.learnedClausesCurrent,
+          });
+        }
+      } finally {
+        this.incrementalCallActive = false;
+      }
+    }
+  }
+
+  solve(assumptions: readonly number[] = []): boolean {
     if (this.permanentUnsat || this.cnf.levelZeroUnsat) {
       this.permanentUnsat = true;
       return false;
@@ -692,9 +744,37 @@ export class Solver {
         if (this.learnedSinceReduction >= this.learnedClauseReductionThreshold) {
           this.reduceLearnedClauses();
         }
-      } else if (this.namedVariablesAssigned()) {
-        return true;
       } else {
+        // MiniSat assumption prefix (Design § Search). The CURRENT level is
+        // the cursor, so backjumps and restarts automatically replay anything
+        // they popped. Already-true assumptions still consume dummy levels.
+        // A false assumption is call-local UNSAT, even if falsified at root;
+        // it is NOT a base conflict and must never poison permanentUnsat.
+        let assumptionEnqueued = false;
+        while (this.trailLim.length < assumptions.length) {
+          const lit = assumptions[this.trailLim.length];
+          const value = litValue(lit, this.assigns);
+          if (value === Value.FALSE) {
+            return false;
+          }
+          this.newDecisionLevel();
+          if (value === Value.UNSET) {
+            this.enqueue(lit, null);
+            assumptionEnqueued = true;
+            break;
+          }
+        }
+        if (assumptionEnqueued) {
+          // Propagate this assumption before advancing the prefix, including
+          // after the last assumption. Assumptions are not heuristic decisions
+          // or propagations; their resulting implications ARE propagations.
+          continue;
+        }
+        // Pending assumptions must be checked even on an already-total root
+        // model, not just when the heuristic would otherwise need a decision.
+        if (this.namedVariablesAssigned()) {
+          return true;
+        }
         const [variable, preferTrue] = this.pickDecision();
         const lit = variable * 2 + (preferTrue ? 0 : 1);
         this.newDecisionLevel();
@@ -768,12 +848,12 @@ export class Solver {
     }
   }
 
-  private enqueueAssumptions(assumptions: VariableAssignments | undefined): void {
+  private translateAssumptions(assumptions: VariableAssignments | undefined): number[] {
     if (assumptions === undefined) {
-      return;
+      return [];
     }
 
-    const translated: Array<[number, Value]> = [];
+    const translated: number[] = [];
     for (const [name, value] of Object.entries(assumptions)) {
       const variable = this.cnf.nameToIndex.get(name);
       if (variable === undefined) {
@@ -783,14 +863,18 @@ export class Solver {
         throw new Error(`invalid assumption value for ${JSON.stringify(name)}: ${String(value)}`);
       }
       if (value !== Value.UNSET) {
-        translated.push([variable, value]);
+        translated.push(variable * 2 + (value === Value.FALSE ? 1 : 0));
       }
     }
+    return translated;
+  }
 
-    for (const [variable, value] of translated) {
-      const lit = variable * 2 + (value === Value.FALSE ? 1 : 0);
+  // Constructor-only assumptions are constant for this instance (single-shot
+  // solving / enumeration), unlike solveAssuming's retractable level prefix.
+  private enqueueAssumptions(assumptions: VariableAssignments | undefined): void {
+    for (const lit of this.translateAssumptions(assumptions)) {
       if (!this.enqueue(lit, null)) {
-        this.startupConflict ??= this.reason[variable];
+        this.startupConflict ??= this.reason[varOf(lit)];
         if (this.startupConflict === null) {
           throw new Error('contradictory assumptions without an explaining clause');
         }
@@ -996,6 +1080,11 @@ export class Solver {
     // terminal root conflict has no analysis/bump but still gets its decay.
     if (this.trailLim.length === 0) {
       this.varInc *= 1 / 0.95;
+      // Remember the proof BEFORE the optional budget exception escapes.
+      // propagate() may already have advanced qhead past a falsified clause;
+      // a later call must not overlook it and report SAT on that drained queue.
+      // Per-call falsified assumptions never enter recordConflict().
+      this.permanentUnsat = true;
     }
     if (this.maxConflicts !== undefined && this.conflictsSoFar >= this.maxConflicts) {
       throw new Error(`maximum conflict budget exhausted (${this.maxConflicts})`);

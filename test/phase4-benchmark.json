@@ -1,0 +1,528 @@
+{
+  "phase": "Phase4",
+  "scope": "single-shot",
+  "references": {
+    "phase1": {
+      "commit": "7037f823d192dc3cf2dc9119c8063781e143113c",
+      "path": "test/baseline.json",
+      "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+      "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+    },
+    "phase2": {
+      "commit": "ade64e558ee47c60ae7b4b2cc29f861ccfb245cf",
+      "path": "test/phase2-benchmark.json",
+      "gitBlob": "e838c35c6d99fde7c73627254ecec18255958c58",
+      "sha256": "830c4bcc5281b2534032de5fa01b5da17f971c1c877999326b18452da5aa7cd4",
+      "provenance": {
+        "reference": {
+          "commit": "7037f823d192dc3cf2dc9119c8063781e143113c",
+          "path": "test/baseline.json",
+          "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+          "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+        },
+        "implementation": {
+          "head": "7037f823d192dc3cf2dc9119c8063781e143113c",
+          "sourceSha256": {
+            "src/compile.ts": "d793bdb15ed83abf39bb978a47bd36694b7096c315137567a54dff0948afb42a",
+            "src/expr.ts": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4",
+            "src/index.ts": "71a0913e46b2d7e127498330640f5fb51d34a791104d8d40d441df74216f5720",
+            "src/solver.ts": "cee5031d304b5dacd9d8ed0a4de0b8908c4bd1ae5edd5f528aca79c0c85a12a1",
+            "test/bench.ts": "2a0ed2a6c7c025c339b13f88c27111b8ee8e0370a7aebf98ae0381002b5c9ede",
+            "test/bench-comparison.ts": "5ef56ef60bc2eaa01eac9fc8464892d1d073e8d6c492fe6c5c40bd21e0ebd334",
+            "test/helpers.ts": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39",
+            "test/php-regressions.ts": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a",
+            "package.json": "b36a0615f82d9cf7de4c243e3e360bb2eb6ebce3bb4bb351c0913122fd8efe45",
+            "package-lock.json": "a702b59be534096c07b2007347c1b5aac02cb1e801f1700ed7e94d8170699d42",
+            "tsconfig.json": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+          },
+          "node": "v26.8.1",
+          "nodeEnv": null
+        }
+      }
+    },
+    "phase3": {
+      "commit": "53a059c761e9b3591b8513a03309699ecef0c889",
+      "path": "test/phase3-benchmark.json",
+      "gitBlob": "d2eb15f01b60a8e639268a94a8081c30570ec6fa",
+      "sha256": "cefb8e62794156441b1154ee7be82a7642446e19bde40ba33d3005a1badd146d",
+      "provenance": {
+        "references": {
+          "phase1": {
+            "commit": "7037f823d192dc3cf2dc9119c8063781e143113c",
+            "path": "test/baseline.json",
+            "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+            "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+          },
+          "phase2": {
+            "commit": "ade64e558ee47c60ae7b4b2cc29f861ccfb245cf",
+            "path": "test/phase2-benchmark.json",
+            "gitBlob": "e838c35c6d99fde7c73627254ecec18255958c58",
+            "sha256": "830c4bcc5281b2534032de5fa01b5da17f971c1c877999326b18452da5aa7cd4",
+            "provenance": {
+              "reference": {
+                "commit": "7037f823d192dc3cf2dc9119c8063781e143113c",
+                "path": "test/baseline.json",
+                "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+                "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+              },
+              "implementation": {
+                "head": "7037f823d192dc3cf2dc9119c8063781e143113c",
+                "sourceSha256": {
+                  "src/compile.ts": "d793bdb15ed83abf39bb978a47bd36694b7096c315137567a54dff0948afb42a",
+                  "src/expr.ts": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4",
+                  "src/index.ts": "71a0913e46b2d7e127498330640f5fb51d34a791104d8d40d441df74216f5720",
+                  "src/solver.ts": "cee5031d304b5dacd9d8ed0a4de0b8908c4bd1ae5edd5f528aca79c0c85a12a1",
+                  "test/bench.ts": "2a0ed2a6c7c025c339b13f88c27111b8ee8e0370a7aebf98ae0381002b5c9ede",
+                  "test/bench-comparison.ts": "5ef56ef60bc2eaa01eac9fc8464892d1d073e8d6c492fe6c5c40bd21e0ebd334",
+                  "test/helpers.ts": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39",
+                  "test/php-regressions.ts": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a",
+                  "package.json": "b36a0615f82d9cf7de4c243e3e360bb2eb6ebce3bb4bb351c0913122fd8efe45",
+                  "package-lock.json": "a702b59be534096c07b2007347c1b5aac02cb1e801f1700ed7e94d8170699d42",
+                  "tsconfig.json": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+                },
+                "node": "v26.8.1",
+                "nodeEnv": null
+              }
+            }
+          }
+        },
+        "implementation": {
+          "head": "ade64e558ee47c60ae7b4b2cc29f861ccfb245cf",
+          "sourceSha256": {
+            "package-lock.json": "a702b59be534096c07b2007347c1b5aac02cb1e801f1700ed7e94d8170699d42",
+            "package.json": "b36a0615f82d9cf7de4c243e3e360bb2eb6ebce3bb4bb351c0913122fd8efe45",
+            "src/compile.ts": "d793bdb15ed83abf39bb978a47bd36694b7096c315137567a54dff0948afb42a",
+            "src/expr.ts": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4",
+            "src/index.ts": "f60bbf0d27364f1df1508b0b413283ae94f2555d64698457a568efbb28275669",
+            "src/solver.ts": "b182fb21c54c54edb7c9bedb3aa97118c12db09707e00b03e79dee96e0fd6011",
+            "test/bench-comparison.ts": "6d6d59ac8b780d0c739a9c65f7641193b5bd14c3af61079d80e9b9d2db3fc60b",
+            "test/bench.ts": "4cbe8871b0cfd6a2b453d3b2e86a11bda459f1b46ce253447ef0d6703b9a25d9",
+            "test/helpers.ts": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39",
+            "test/php-regressions.ts": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a",
+            "tsconfig.json": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+          },
+          "node": "v26.8.1",
+          "nodeEnv": null
+        }
+      }
+    }
+  },
+  "implementation": {
+    "head": "53a059c761e9b3591b8513a03309699ecef0c889",
+    "sourceSha256": {
+      "package-lock.json": "583b6a3fdf8552b86e12254ee4547aa59c751a9e00e35e8799e0a006f13dd789",
+      "package.json": "0528e0870fcf10f6cd545ff7df34fd7c76e811070628e7727d65dd6e8e8350ce",
+      "src/compile.ts": "3e12d751dfe310c19fc59a865b9c5f77efb3a1475c9d861b2a06cc6fa02e4cf6",
+      "src/expr.ts": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4",
+      "src/index.ts": "d76706c93e4c6b45165fcf27bcbf5d3cf387cbc149cf65a2fcab86fe5f59cd8b",
+      "src/solver.ts": "2c324e89df0f1f99c2f61fc8d8026e87408f7c190beb4a4112b0cb2cbc2bff0f",
+      "test/bench-comparison.ts": "e059a617e69286a877c818db79cceadd3715bb3b08abbb05b62956da02f5df13",
+      "test/bench.ts": "cf7d343d8420ecc0c402e113d7d7b6b08d7e18cdcfc96e281ea5e9f3b9b5cb68",
+      "test/helpers.ts": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39",
+      "test/php-regressions.ts": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a",
+      "tsconfig.json": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+    },
+    "node": "v26.8.1",
+    "nodeEnv": null
+  },
+  "notes": [
+    "Phase-4 release single-shot evidence only: manual counter comparison, not a speedup gate or task-completion claim. This suite does not measure createSolver performance or persistent enumeration.",
+    "Higher decisions, propagations, or conflicts are explicitly listed as count regressions against each reference. No blanket performance gain, Phase-1 infeasibility, or orders-of-magnitude improvement is claimed.",
+    "Phase 1 contains six completed rows, no budget-exhausted rows, and no PHP(7,6)/PHP(8,7) measurements. Phase 1 did not record learnedClausesCurrent, fixture hashes, or verdicts. Missing measurements remain missing, not zero, timeouts, or infinite improvements.",
+    "Fixture verification requires exact agreement with the authenticated Phase-2/3 AST/constant-assumption fingerprints, generator labels, assumptions, coverage, and conflict caps. The original Phase-1 runner and generator configuration was checked in Git history; no new historical measurements are invented.",
+    "The original six rows retain maxConflicts=200000. Random 3-SAT retains 20 variables, 85 clauses, and seeds 42/43/44. PHP(7,6)/PHP(8,7) retain caps 7230/36270, exactly 10x the historical calibrations 723/3627; caps are not recalibrated.",
+    "Every run uses fresh compilation and an internal Solver, mirroring single-shot getSolution with the default brancher and enablePle=true plus an explicit conflict cap. Every SAT model passes independent assertModelShape/expressionValue and strict own numeric constant-assumption checks. Verdicts must agree with Phases 2 and 3; PHP UNSAT also follows from the pigeonhole principle. Budget exhaustion throws, never becomes UNSAT evidence.",
+    "Hypergraph must retain exactly 2 decisions, 16 propagations, and 0 conflicts. The PHP rows must engage learning. Passing fixed budgets proves only those budgets.",
+    "Ratios are reference/Phase4, rounded to two decimals, not wall-time speedups. A zero denominator is n/a, with 0/0 labelled parity. Learning and restart counters report activity, not speedup; more or fewer of these counters alone is not a performance verdict.",
+    "learnedClausesCurrent is the final live learned-clause count, not peak or total memory. The default reduction threshold is not lowered for this suite; these six counters do not count reduction events or establish default-reduction engagement. Phase-3 single-shot rows never reached its 10000-admission default threshold. Protected clauses and permanent enumeration blockers preclude any implied total-memory bound; enumeration is outside this suite.",
+    "All three references are independently authenticated by full artifact commit, Git blob, and SHA-256. Phase-3 embedded Phase-1/2 provenance is preserved verbatim and checked against the independently authenticated prior artifacts, including counters, fixtures, and verdicts. Phase-2/3 implementation hashes are checked against their ARTIFACT commits, not their recorded HEADs (context only).",
+    "Current HEAD is context only. sourceSha256 fingerprints actual working bytes before implementation imports; hashes and file versions are checked again before recording. File versions are not stored. fixtureSha256 hashes UTF-8 JSON.stringify({ expr, assumptions }) before compilation and is checked again after solving.",
+    "Working-tree baseline.json and frozen Phase-2/3 JSON/Markdown/review files are never reference inputs or output targets. Only phase4-benchmark.json and phase4-benchmark.md are written. No models, timestamps, or wall times are stored; timing is console-only."
+  ],
+  "regressions": [
+    {
+      "instance": "php_6_5",
+      "reference": "Phase2",
+      "counter": "decisions",
+      "before": 195,
+      "after": 205,
+      "delta": 10
+    },
+    {
+      "instance": "php_6_5",
+      "reference": "Phase2",
+      "counter": "propagations",
+      "before": 1791,
+      "after": 1905,
+      "delta": 114
+    },
+    {
+      "instance": "php_6_5",
+      "reference": "Phase2",
+      "counter": "conflicts",
+      "before": 147,
+      "after": 152,
+      "delta": 5
+    },
+    {
+      "instance": "php_7_6",
+      "reference": "Phase2",
+      "counter": "decisions",
+      "before": 865,
+      "after": 1061,
+      "delta": 196
+    },
+    {
+      "instance": "php_7_6",
+      "reference": "Phase2",
+      "counter": "propagations",
+      "before": 10038,
+      "after": 12237,
+      "delta": 2199
+    },
+    {
+      "instance": "php_7_6",
+      "reference": "Phase2",
+      "counter": "conflicts",
+      "before": 723,
+      "after": 834,
+      "delta": 111
+    },
+    {
+      "instance": "php_8_7",
+      "reference": "Phase2",
+      "counter": "decisions",
+      "before": 4067,
+      "after": 7179,
+      "delta": 3112
+    },
+    {
+      "instance": "php_8_7",
+      "reference": "Phase2",
+      "counter": "propagations",
+      "before": 54184,
+      "after": 100904,
+      "delta": 46720
+    },
+    {
+      "instance": "php_8_7",
+      "reference": "Phase2",
+      "counter": "conflicts",
+      "before": 3627,
+      "after": 5946,
+      "delta": 2319
+    }
+  ],
+  "entries": [
+    {
+      "name": "hypergraph",
+      "fixture": "hypergraphFormula()",
+      "assumptions": {
+        "h": 1
+      },
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "c6ee32aee69441141a2e6142ab40cb690a62a3c52f92df6d18ff9d9b7d550939",
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0,
+        "learnedClausesCurrent": 0
+      },
+      "phase3": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0,
+        "learnedClausesCurrent": 0
+      },
+      "phase4": {
+        "decisions": 2,
+        "propagations": 16,
+        "conflicts": 0,
+        "restarts": 0,
+        "learnedClauses": 0,
+        "learnedClausesCurrent": 0
+      }
+    },
+    {
+      "name": "php_5_4",
+      "fixture": "cnfToExpr(phpCnf(5, 4))",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "b6d3c281d6ded8e2bdf998bd053999015a26fe1b4e16d023d9dd626bc8938022",
+      "verdict": "UNSAT",
+      "phase1": {
+        "decisions": 51,
+        "propagations": 394,
+        "conflicts": 52,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 38,
+        "propagations": 301,
+        "conflicts": 28,
+        "restarts": 0,
+        "learnedClauses": 27,
+        "learnedClausesCurrent": 27
+      },
+      "phase3": {
+        "decisions": 38,
+        "propagations": 301,
+        "conflicts": 28,
+        "restarts": 0,
+        "learnedClauses": 27,
+        "learnedClausesCurrent": 27
+      },
+      "phase4": {
+        "decisions": 38,
+        "propagations": 301,
+        "conflicts": 28,
+        "restarts": 0,
+        "learnedClauses": 27,
+        "learnedClausesCurrent": 27
+      }
+    },
+    {
+      "name": "php_6_5",
+      "fixture": "cnfToExpr(phpCnf(6, 5))",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "793fdee5ff415d6043de46c9f4a20ed9d001d5f6dc8ad4a5bcc1d2d5a7ce7dd0",
+      "verdict": "UNSAT",
+      "phase1": {
+        "decisions": 374,
+        "propagations": 3127,
+        "conflicts": 375,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 195,
+        "propagations": 1791,
+        "conflicts": 147,
+        "restarts": 0,
+        "learnedClauses": 146,
+        "learnedClausesCurrent": 146
+      },
+      "phase3": {
+        "decisions": 205,
+        "propagations": 1905,
+        "conflicts": 152,
+        "restarts": 1,
+        "learnedClauses": 151,
+        "learnedClausesCurrent": 151
+      },
+      "phase4": {
+        "decisions": 205,
+        "propagations": 1905,
+        "conflicts": 152,
+        "restarts": 1,
+        "learnedClauses": 151,
+        "learnedClausesCurrent": 151
+      }
+    },
+    {
+      "name": "sat3_seed42",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(42), 20, 85))",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "9b46c4325819ab08b81fb695b5c5e7c356f976dcdad494ecdf52459d76df9c0d",
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 22,
+        "propagations": 149,
+        "conflicts": 20,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 16,
+        "propagations": 137,
+        "conflicts": 13,
+        "restarts": 0,
+        "learnedClauses": 13,
+        "learnedClausesCurrent": 13
+      },
+      "phase3": {
+        "decisions": 16,
+        "propagations": 137,
+        "conflicts": 13,
+        "restarts": 0,
+        "learnedClauses": 13,
+        "learnedClausesCurrent": 13
+      },
+      "phase4": {
+        "decisions": 16,
+        "propagations": 137,
+        "conflicts": 13,
+        "restarts": 0,
+        "learnedClauses": 13,
+        "learnedClausesCurrent": 13
+      }
+    },
+    {
+      "name": "sat3_seed43",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(43), 20, 85))",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "e2c45ccf7fb48ee7cee554f94c1c9d38ffeaef6206d0bd09b676266a2aa481a6",
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 2,
+        "learnedClausesCurrent": 2
+      },
+      "phase3": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 2,
+        "learnedClausesCurrent": 2
+      },
+      "phase4": {
+        "decisions": 6,
+        "propagations": 27,
+        "conflicts": 2,
+        "restarts": 0,
+        "learnedClauses": 2,
+        "learnedClausesCurrent": 2
+      }
+    },
+    {
+      "name": "sat3_seed44",
+      "fixture": "cnfToExpr(random3Cnf(mulberry32(44), 20, 85))",
+      "assumptions": {},
+      "maxConflicts": 200000,
+      "calibratedConflicts": null,
+      "fixtureSha256": "3f8b1650526921b5bb6bf90ecb1d4ee923e9a71f2e2c856fa12dca5b7d8e0f5f",
+      "verdict": "SAT",
+      "phase1": {
+        "decisions": 10,
+        "propagations": 40,
+        "conflicts": 3,
+        "restarts": 0,
+        "learnedClauses": 0
+      },
+      "phase2": {
+        "decisions": 7,
+        "propagations": 24,
+        "conflicts": 1,
+        "restarts": 0,
+        "learnedClauses": 1,
+        "learnedClausesCurrent": 1
+      },
+      "phase3": {
+        "decisions": 7,
+        "propagations": 24,
+        "conflicts": 1,
+        "restarts": 0,
+        "learnedClauses": 1,
+        "learnedClausesCurrent": 1
+      },
+      "phase4": {
+        "decisions": 7,
+        "propagations": 24,
+        "conflicts": 1,
+        "restarts": 0,
+        "learnedClauses": 1,
+        "learnedClausesCurrent": 1
+      }
+    },
+    {
+      "name": "php_7_6",
+      "fixture": "cnfToExpr(phpCnf(7, 6))",
+      "assumptions": {},
+      "calibratedConflicts": 723,
+      "maxConflicts": 7230,
+      "fixtureSha256": "aa2947064f12923f17f637f08d0a0d7e4997f7a786910aa2b2654108c2676ebe",
+      "verdict": "UNSAT",
+      "phase1": null,
+      "phase2": {
+        "decisions": 865,
+        "propagations": 10038,
+        "conflicts": 723,
+        "restarts": 0,
+        "learnedClauses": 722,
+        "learnedClausesCurrent": 722
+      },
+      "phase3": {
+        "decisions": 1061,
+        "propagations": 12237,
+        "conflicts": 834,
+        "restarts": 6,
+        "learnedClauses": 833,
+        "learnedClausesCurrent": 833
+      },
+      "phase4": {
+        "decisions": 1061,
+        "propagations": 12237,
+        "conflicts": 834,
+        "restarts": 6,
+        "learnedClauses": 833,
+        "learnedClausesCurrent": 833
+      }
+    },
+    {
+      "name": "php_8_7",
+      "fixture": "cnfToExpr(phpCnf(8, 7))",
+      "assumptions": {},
+      "calibratedConflicts": 3627,
+      "maxConflicts": 36270,
+      "fixtureSha256": "0c04b00e2d37b97c254308da2a7f4703b2a8dc552f64692ec507a31b15f272cc",
+      "verdict": "UNSAT",
+      "phase1": null,
+      "phase2": {
+        "decisions": 4067,
+        "propagations": 54184,
+        "conflicts": 3627,
+        "restarts": 0,
+        "learnedClauses": 3626,
+        "learnedClausesCurrent": 3626
+      },
+      "phase3": {
+        "decisions": 7179,
+        "propagations": 100904,
+        "conflicts": 5946,
+        "restarts": 29,
+        "learnedClauses": 5945,
+        "learnedClausesCurrent": 5945
+      },
+      "phase4": {
+        "decisions": 7179,
+        "propagations": 100904,
+        "conflicts": 5946,
+        "restarts": 29,
+        "learnedClauses": 5945,
+        "learnedClausesCurrent": 5945
+      }
+    }
+  ]
+}

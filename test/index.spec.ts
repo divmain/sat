@@ -460,6 +460,24 @@ describe('getAllSolutions', () => {
     });
   });
 
+  describe('unsolvable', () => {
+    it('returns [] for the original v1 unsolvable worked example', () => {
+      // Exact bruteForceAllSolutions case from 7037f82^:test/index.spec.ts.
+      const formula = and(
+        not('b'),
+        or('a', 'b'),
+        xor('b', 'c'),
+        implies('c', and('d', 'e')),
+        not('d'),
+        xor('b', 'e'),
+      );
+      // b=FALSE forces c=TRUE, hence d=TRUE, contradicting not(d).
+      // Independently check all 32 assignments over a,b,c,d,e as well.
+      assert.deepStrictEqual(referenceModels(formula), []);
+      assert.deepStrictEqual(getAllSolutions(formula), []);
+    });
+  });
+
   describe('edge cases', () => {
     it('implements the v1-compatible empty-formula semantics', () => {
       // and(): the empty conjunction has one model, {}; the blocking clause
@@ -581,14 +599,15 @@ describe('getAllSolutions', () => {
 
 describe('public surface', () => {
   it('exports exactly the v2 symbol list', () => {
-    // Runtime values: the frozen formula API plus getSolution and
-    // getAllSolutions. Types (BooleanExpr, Variable, VariableAssignments,
-    // SolverStats, SolveOptions, VariablePriority) are exported by name but
+    // Runtime values: the frozen formula API plus getSolution,
+    // getAllSolutions and createSolver. Types (BooleanExpr, Variable, VariableAssignments,
+    // SolverStats, SolveOptions, VariablePriority, SatSolver) are exported by name but
     // erased at runtime; no v1 entry point (bruteForceAllSolutions,
     // getInitialAssignments, selectNextVar) may survive.
     assert.deepStrictEqual(Object.keys(publicApi).sort(), [
       'Value',
       'and',
+      'createSolver',
       'getAllSolutions',
       'getSolution',
       'implies',

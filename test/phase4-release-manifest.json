@@ -1,0 +1,1198 @@
+{
+  "schemaVersion": 1,
+  "recordStatus": "Current independent disposition is in independentVerification. currentRepair and all original task-aa07 candidate/sourceFiles/gates/tests/package fields retain their earlier checkpoint-time provenance, statuses, and measurements; do not substitute them for the new verification or final annotation identity.",
+  "independentVerification": {
+    "status": "SUCCESS",
+    "plan": "plan-7748",
+    "phase": "Phase4",
+    "verifier": "original_phase4_verifier_resumed",
+    "ticketStatus": "complete",
+    "parentPhaseCommitApproved": true,
+    "committedCleanCheckoutConfirmation": "Still required from the parent after the authorized phase commit; not performed or claimed here.",
+    "originalDeficit": "Resolved, not waived: GENERAL repair agent retained the exact historical worked-UNSAT public enumeration regression; original verifier independently compared syntax/AST/truth table and executed the retained test in the new full suite.",
+    "implementationSeparation": "No production source, executable test, fixture, budget, expectation, package metadata, or dependency was changed during the resumed independent verification. Only the three final evidence records were annotated.",
+    "scratch": "/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-phase4-verifier-20260906",
+    "executedCandidate": {
+      "baseHead": "53a059c761e9b3591b8513a03309699ecef0c889",
+      "tree": "8fe8b56bc567a4dd5ca15945cb73e0c59cbf093e",
+      "fileCount": 46,
+      "archiveSha256": "57c403485db057ba81befb6f0ad5b955360e7e18c5185f00e573944e63c051c6",
+      "method": "Independently reconstructed 23-path allowlisted private index over Phase3 HEAD, materialized into a NEW --no-local full-history clone. Not Git-status-clean; workspace active index untouched.",
+      "freshness": "node_modules, dist, .janus and Git alternates absent before new npm ci/build. All three historical commits and git fsck passed. Unowned baseline excluded in favor of committed bytes.",
+      "inventory": "candidate-inputs.json",
+      "annotationPolicy": "The three non-packaged evidence records change after this executed tree. Their exact new tree/differences are external in final-annotation-inputs.json; final verification-results.json validates every runtime/test/config/package byte is unchanged. Do not claim this executed tree identifies the later annotation bytes."
+    },
+    "executionCheckpoint": {
+      "file": "verification-checkpoint-results.json",
+      "sha256": "90426a5d891be68bcdd461021c33095cac6f760eff10e3fd79a47b93968d14fa",
+      "authenticatedCommandRecords": 18,
+      "finalEvidence": "verification-results.json and final-annotation-inputs.json in the new verifier scratch; includes final annotation/tooling/full-suite checks without self-hashing this manifest."
+    },
+    "gates": [
+      "workspace and fresh candidate npm run build",
+      "workspace and fresh candidate npm run check (lint and format)",
+      "workspace and fresh candidate strict source/test tsc --noEmit",
+      "workspace and fresh candidate npm test: 669 tests / 78 suites, zero failures/cancellations/skips/todos",
+      "explicit line coverage: compile.ts99.50%, solver.ts98.65%, each at least90%",
+      "fresh candidate npm run bench twice, each real JSON/MD pair separately retained",
+      "git diff --check including full private candidate tree",
+      "new npm pack and isolated installed plain-Node / strict-NodeNext / all-six-README execution",
+      "independent truth tables, learning/root entailment, lifecycle/counter/negative-oracle and deep-iterative probes",
+      "final evidence-only annotations checked and inventoried separately"
+    ],
+    "lineCoverage": { "compile.ts": 99.5, "solver.ts": 98.65 },
+    "fixedBatteries": {
+      "mainVariants": 2,
+      "formulasPerMainVariant": 1024,
+      "assumptionSamplesPerMainVariant": 3824,
+      "incrementalConfigurations": 3,
+      "formulasPerIncrementalConfiguration": 256,
+      "callsPerIncrementalConfiguration": 2048,
+      "enumerationStressModels": 59049,
+      "stressPeakLiveLearned": 103,
+      "stressLiveBound": 256,
+      "stressDeletingRounds": 922,
+      "stressDeletions": 29437
+    },
+    "independentDiagnostics": {
+      "truthFunctions": 256,
+      "orderedPublicCalls": 32768,
+      "satPublicCalls": 26864,
+      "unsatPublicCalls": 5904,
+      "observedRecoveryTransitions": 1465,
+      "satBases": 86,
+      "observedCalls": 2718,
+      "analyzedClauses": 578,
+      "nonVacuousClauseModelEntailments": 14143,
+      "retainedRootConsequenceChecks": 18806,
+      "dummyLevels": 1510,
+      "restarts": 367,
+      "reductions": 572,
+      "deletions": 81,
+      "laterCallDeletions": 74,
+      "negativeModelOracles": 12,
+      "sameBatteryAgainstFreshBuildAndInstalledArtifact": true,
+      "compileCountAcross256ChangingPublicCalls": 1,
+      "expressionReadsAtCreationThenNone": 2,
+      "actualPublicCoreInstancesAcross128Calls": 1,
+      "nonAssumptionBackjump": "3-to-0, both assumptions replayed, call still SAT",
+      "maximumObservedDecisionDepth": 16384,
+      "deepSearchDecisionsAcrossTwoCalls": 32768,
+      "originalEnumerationCounts": [1, 3, 1, 3, 2, 1, 0],
+      "originalUnsatTruthRows": 32,
+      "originalUnsatPrefixSurvivors": [16, 8, 4, 1, 0, 0],
+      "scope": "Separate evaluators/discovery/corpus; transparent observers delegate unchanged to production algorithms. Auxiliary full-CNF table is included. Repeated installed checks are not a distinct corpus."
+    },
+    "package": {
+      "file": "divmain-sat-2.0.0.tgz",
+      "bytes": 41105,
+      "sha256": "6a2384999c4b14f00699ea36d1c118c4a736c40d39537a918a1f5a202b6ada41",
+      "byteComparedWithRepairTarball": true,
+      "installedFilesMatchingWorkspaceAndFreshBuild": 10,
+      "runtimeExports": 9,
+      "typeOnlyExports": 7,
+      "negativeTypeChecks": 39,
+      "readmeExamples": 6,
+      "plainNodeProductionAndUnset": true,
+      "consumerEvidence": "consumer/release-evidence.json",
+      "consumerEvidenceSha256": "cfe2a48f95769e1270de24d7eacc42b56f035ca83e2a74cc6990f2c96f490e91",
+      "noWorkspaceOrAmbientFallback": true
+    },
+    "benchmark": {
+      "newRealRuns": 2,
+      "separateRetainedPairs": "candidate-bench-{1,2}.report.{json,md}",
+      "jsonSha256": "4e0bf82088935537737a2e61e011875988a66b703b105c5f6c61c1b5b61ab795",
+      "markdownSha256": "9c42e40e47158d0fb7f47a5a59cbe61b7d02d8ec06f862cf2b5fb3f15a15bc24",
+      "authenticatedHistoricalSourceHashes": 22,
+      "phase3EqualCounters": 48,
+      "phase2Regressions": 9,
+      "largePhpConflicts": [834, 5946],
+      "largePhpCaps": [7230, 36270],
+      "hypergraphDecisionsPropagationsConflicts": [2, 16, 0],
+      "scope": "Single-shot only. Repair-agent six retained pairs were also audited as prior evidence, not newly executed by this verifier. The old aa07 four-run JSON-retention limitation is not retroactively repaired."
+    },
+    "preservation": {
+      "head": "53a059c761e9b3591b8513a03309699ecef0c889",
+      "activeIndexGitBlob": "bfd376204b766cee0d0bfbb9a91caecbf26d2222",
+      "unownedBaselineGitBlob": "db759f95c491e685f27ed12039897dcb10c8e4a1",
+      "frozenPhase2And3ArtifactsUnchanged": true,
+      "stagedDiffEmpty": true,
+      "noCommitsTagsPushesOrPublication": true,
+      "noNewTicketsOrObjectives": true
+    },
+    "limitations": [
+      "Parent committed Git-clean confirmation remains required after its authorized phase commit.",
+      "Two moderate/two high locked development-tool vulnerabilities, transitive deprecations/install-script notices and Node26/tsx DEP0205 remain disclosed. Runtime-only audit0; no upgrades or warning suppression.",
+      "Node26.8.1/TypeScript5.4.5 and exercised inputs, not every environment or a universal proof. Compiler/frontend nesting remains recursive.",
+      "Not incremental/enumeration performance, default-reduction, broad scalability, or total-memory evidence. objv-b2ca remains independent and unachieved."
+    ]
+  },
+  "currentRepair": {
+    "ticket": "task-2c7f",
+    "status": "repair_checkpoint_passed_independent_reverification_pending",
+    "ticketStatusAtCheckpoint": "in_progress",
+    "historicalFailure": {
+      "verifier": "ses_f89bbba71ffeI401gV2M5BmKR9",
+      "notedAt": "2026-09-06T10:40:08Z",
+      "finding": "FAILURE: task-4d06 required a retained exact v1 worked-UNSAT enumeration regression. The prior ad hoc probe did not satisfy the missing regular-suite port.",
+      "currentDisposition": "Exact regression restored, not waived. No production defect was found. Original FAILURE remains history; original verifier must independently re-review the repaired candidate."
+    },
+    "regression": {
+      "path": "test/index.spec.ts",
+      "suite": "getAllSolutions / unsolvable",
+      "test": "returns [] for the original v1 unsolvable worked example",
+      "expression": "and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')), not('d'), xor('b', 'e'))",
+      "assertions": [
+        "assert.deepStrictEqual(referenceModels(formula), [])",
+        "assert.deepStrictEqual(getAllSolutions(formula), [])"
+      ],
+      "source": "7037f82^:test/index.spec.ts:269-280 (expression at line 271)",
+      "originalCommit": "49a71b81c65f42b0ac01a061a6977da7aa594e54",
+      "originalTestBlob": "b29fa571014e8449e0f1df90d4945a9cd934c1b5",
+      "originalSourceBlob": "0179071e1e88c3ebdde42018a720c2c64540c199",
+      "gitBlob": "73ae795a1e99126be808f7bc75d08043f78a3611",
+      "bytes": 25283,
+      "sha256": "fe24929d46a08cb02621f6812f27cddb71e488cdbc3cd00da1c4127fddb2ae58",
+      "proof": "Constructor-call syntax and actual historical/current desugared ASTs match. Local AST evaluation and separate direct Boolean algebra agree on all 32 assignments over a,b,c,d,e. not(b) forces c via xor, then d via implies, contradicting not(d).",
+      "expandedAstSha256": "ac85086cbb28e44bdd8fba6edd9d1cdef65d462585132d50947da84428a5452b",
+      "truthRows": 32,
+      "satisfyingAssignments": 0,
+      "prefixSurvivors": [16, 8, 4, 1, 0, 0],
+      "installedProof": {
+        "file": "installed-v1-proof.stdout.log",
+        "sha256": "0b666c7fbbe2d97d52805673a9739f1040a8ba2293c461d93c3f28dc42323766"
+      }
+    },
+    "candidate": {
+      "scratch": "/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-2c7f-repair-20260906",
+      "method": "New full-history --no-local clone with own objects, detached at Phase-3 HEAD, overlaid with a 23-path allowlisted private-index tree. Not Git-status-clean. Fresh npm ci/build; no workspace node_modules/dist copied or linked.",
+      "baseHead": "53a059c761e9b3591b8513a03309699ecef0c889",
+      "executionInputTree": "0ef5b93de519281ad0a5beaae05a3d4eacb2f33b",
+      "sourceFileCount": 46,
+      "archiveSha256": "c7d055c6cdda47db7060191ab73f6ebcbc15d0f3d27b5d91f824790349d60d3f",
+      "inputInventory": {
+        "file": "candidate-inputs.json",
+        "sha256": "5ae7f22c337fa5ced979b7f1c25aaaefcf9349bf8d0e0768e14acd415755117d"
+      },
+      "freshInstallState": {
+        "nodeModulesPresent": false,
+        "distPresent": false,
+        "janusPresent": false,
+        "shallow": false,
+        "alternatesPresent": false,
+        "ownGitObjects": true
+      },
+      "includes": "All intended Phase-4 executable/config/test/package bytes, the new retained regression, and the three pre-existing evidence records, including phase4-acceptance-review.md.",
+      "excludes": "Unowned working baseline (uses HEAD bytes), Janus data, secrets, node_modules, dist, and tarballs.",
+      "annotationPolicy": "This currentRepair section and both review annotations are post-checkpoint records. All executable/config/test/package inputs are frozen. The final annotated 46-file tree is exported to a second new full-history clone with fresh npm ci/build/full gates/pack/installed consumer; its identity/results are external to avoid self-hashing this manifest. Do not label executionInputTree as the final annotation tree.",
+      "finalAnnotatedInventory": "final-candidate-inputs.json",
+      "finalAnnotatedResults": "final-results.json",
+      "finalIdentityLocation": "task-2c7f repair-results note and final-candidate-inputs.json under this scratch root"
+    },
+    "checkpointResults": {
+      "file": "checkpoint-results.json",
+      "sha256": "f3b4c80ec5b59517c11c0e5e1ac7dfd356630cc784aeac2a705e001f442cfe82",
+      "validatedCommandRecords": 25,
+      "workspace": [
+        "npm run build",
+        "npm run check",
+        "npm test",
+        "strict source/test tsc --noEmit",
+        "npm run bench (twice, separate raw report copies)",
+        "git diff --check",
+        "public index.spec.ts suite and independent v1 proof"
+      ],
+      "freshCandidate": [
+        "npm ci",
+        "npm run build",
+        "npm run check",
+        "npm test",
+        "strict source/test tsc --noEmit",
+        "npm run bench (twice, separate raw report copies)",
+        "git diff --check",
+        "npm pack --json --pack-destination <new scratch>",
+        "node test/release-smoke.mjs <new tarball> <new consumer>",
+        "plain-Node installed runtime with NODE_ENV unset",
+        "independent v1 proof against fresh build and installed package",
+        "npm audit --omit=dev --json",
+        "candidate/input/artifact/preservation assertions"
+      ],
+      "allExitCodes": 0,
+      "testsPerLocation": 669,
+      "suitesPerLocation": 78,
+      "failedCancelledSkippedTodoPerLocation": [0, 0, 0, 0],
+      "lineCoveragePerLocation": { "compile.ts": 99.5, "solver.ts": 98.65 },
+      "suiteLogs": {
+        "workspace-test.stdout.log": "7b8e7d33040ba891acb5ea87b25ae1920a1fc3a329c2af516d6d80dbedb68483",
+        "candidate-test.stdout.log": "5b0ecedc3d847d407354a63a0b2eda78459ff4a8caaf26d90080c9f7b2f25584"
+      },
+      "stressModels": 59049,
+      "peakLiveLearned": 103,
+      "liveLearnedBound": 256,
+      "propertyFormulasPerVariant": 1024,
+      "assumptionSamplesPerVariant": 3824,
+      "incrementalConfigurations": 3,
+      "incrementalFormulasPerConfiguration": 256,
+      "incrementalCallsPerConfiguration": 2048,
+      "actualCompilerDeltaAcross256PublicCalls": 1
+    },
+    "benchmark": {
+      "newRealRunsAtCheckpoint": 4,
+      "separateRawReportPairs": [
+        "workspace-bench-1.report.{json,md}",
+        "workspace-bench-2.report.{json,md}",
+        "candidate-bench-1.report.{json,md}",
+        "candidate-bench-2.report.{json,md}"
+      ],
+      "immediateHashAssertionsAndByteComparisons": true,
+      "jsonSha256": "4e0bf82088935537737a2e61e011875988a66b703b105c5f6c61c1b5b61ab795",
+      "markdownSha256": "9c42e40e47158d0fb7f47a5a59cbe61b7d02d8ec06f862cf2b5fb3f15a15bc24",
+      "phase3EqualCounters": 48,
+      "countRegressionsAgainstPhase2": 9,
+      "largePhpConflicts": [834, 5946],
+      "largePhpConflictCaps": [7230, 36270],
+      "scope": "Real current single-shot benchmark only. No hand-edited reports, incremental/enumeration performance claims, or total-memory bound.",
+      "historicalRetentionLimitation": "The original task-aa07 allRunsByteIdentical flag below reported four runs without separately retained per-run JSON copies. It is preserved as historical testimony, not four independent byte comparisons. The earlier task-2c7f pass made two immediate hash assertions; this repair separately retains every new raw pair."
+    },
+    "package": {
+      "tarball": "divmain-sat-2.0.0.tgz",
+      "bytes": 41105,
+      "sha256": "6a2384999c4b14f00699ea36d1c118c4a736c40d39537a918a1f5a202b6ada41",
+      "byteComparedToHistoricalTarball": true,
+      "all10InstalledFilesEqualFreshAndWorkspaceBuilds": true,
+      "consumer": "consumer",
+      "consumerEvidence": {
+        "file": "consumer/release-evidence.json",
+        "sha256": "68d47b0535f7d4308b8262c82c8626e571f3fda1fe445453ca6db736e3ac9c4c"
+      },
+      "plainNodeBothEnvironments": true,
+      "strictNodeNextNoAmbientLeakage": true,
+      "runtimeProbeGroups": 10,
+      "negativeTypeChecks": 39,
+      "installedReadmeExamples": 6
+    },
+    "environment": {
+      "node": "v26.8.1",
+      "typescript": "5.4.5",
+      "childNpm": "11.19.0",
+      "gateNodeEnv": null,
+      "gateTsxDisableCache": "1"
+    },
+    "preservation": {
+      "workspaceFilesIntentionallyChanged": [
+        "test/index.spec.ts",
+        "test/phase4-acceptance-review.md",
+        "test/phase4-benchmark-review.md",
+        "test/phase4-release-manifest.json"
+      ],
+      "productionAndOtherIncomingFilesUnchanged": true,
+      "frozenPhase2And3ArtifactsUnchanged": true,
+      "workspaceHeadUnchanged": true,
+      "workspaceIndexGitBlob": "bfd376204b766cee0d0bfbb9a91caecbf26d2222",
+      "workspaceIndexSha256": "d59661cdc556269ed1e997312297a7c3122c11d26b255a91e14e587e6a924f73",
+      "unownedBaselineGitBlob": "db759f95c491e685f27ed12039897dcb10c8e4a1",
+      "stagedDiffEmpty": true
+    },
+    "limitations": [
+      "At this historical repair checkpoint, original-verifier re-review was pending and task-2c7f was in_progress. Current independent approval and complete status are recorded separately in independentVerification.",
+      "The exact source is an uncommitted allowlisted overlay, not Git-status-clean. No active-index staging, commits/amends/tags/pushes/PRs/publication/new tickets/objectives occurred.",
+      "Parent must obtain independent phase approval and user approval before any commit, then perform the actual committed clean-checkout confirmation. objv-b2ca remains independent and not achieved.",
+      "Existing dev-tool vulnerabilities (2 moderate, 2 high), transitive deprecations/install-script notices, and Node26/tsx DEP0205 remain visible. Runtime-only audit is zero; no dependency project or waiver was added."
+    ]
+  },
+  "ticket": "task-aa07",
+  "plan": "plan-7748",
+  "scope": "Documentation, versioning, packaging, and release-source validation only; not task-2c7f or independent Phase-4 acceptance.",
+  "candidate": {
+    "method": "Full-history local clone at Phase-3 HEAD, overlaid with an allowlisted private-index Git tree. No commits; workspace index unchanged. Candidate working tree intentionally differs from HEAD.",
+    "workspace": "/Users/dalebustad/dev/sat",
+    "scratch": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906",
+    "path": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+    "baseHead": "53a059c761e9b3591b8513a03309699ecef0c889",
+    "tree": "8b58af7efa801254b7c3a515b0e046ea4a3e6d87",
+    "archiveSha256": "b4a8b051a0d2e5d30e84a8650d819aa6027f4771b1c891f569f693354a34c388",
+    "sourceFileCount": 43,
+    "freshInstallState": {
+      "nodeModulesPresent": false,
+      "distPresent": false,
+      "janusPresent": false,
+      "shallow": false,
+      "ownGitObjects": true
+    },
+    "excluded": [
+      "unowned working test/baseline.json change (candidate uses HEAD bytes)",
+      "ignored .janus",
+      "node_modules",
+      "dist",
+      "tarballs",
+      "untracked secrets"
+    ],
+    "postValidationEvidence": [
+      "test/phase4-benchmark-review.md",
+      "test/phase4-release-manifest.json"
+    ],
+    "postValidationEvidencePolicy": "These two review records are created after execution, excluded from this non-self-referential input manifest and from npm files. All packaged bytes and executable/config/test inputs are frozen and hashed below.",
+    "overlay": [
+      ".gitignore",
+      "AGENTS.md",
+      "README.md",
+      "package-lock.json",
+      "package.json",
+      "src/compile.ts",
+      "src/index.ts",
+      "src/solver.ts",
+      "test/bench-comparison.spec.ts",
+      "test/bench-comparison.ts",
+      "test/bench.ts",
+      "test/incremental-helpers.ts",
+      "test/incremental-property.spec.ts",
+      "test/incremental.spec.ts",
+      "test/index.spec.ts",
+      "test/phase4-benchmark.json",
+      "test/phase4-benchmark.md",
+      "test/release-consumer.mjs",
+      "test/release-consumer.mts",
+      "test/release-smoke.mjs"
+    ],
+    "statusBeforeInstall": " M .gitignore\n M AGENTS.md\n M README.md\n M package-lock.json\n M package.json\n M src/compile.ts\n M src/index.ts\n M src/solver.ts\n M test/bench-comparison.spec.ts\n M test/bench-comparison.ts\n M test/bench.ts\n M test/index.spec.ts\n?? test/incremental-helpers.ts\n?? test/incremental-property.spec.ts\n?? test/incremental.spec.ts\n?? test/phase4-benchmark.json\n?? test/phase4-benchmark.md\n?? test/release-consumer.mjs\n?? test/release-consumer.mts\n?? test/release-smoke.mjs\n",
+    "privateIndex": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate.index",
+    "workspaceIndexSha256": "d59661cdc556269ed1e997312297a7c3122c11d26b255a91e14e587e6a924f73",
+    "workspaceIndexGitBlob": "bfd376204b766cee0d0bfbb9a91caecbf26d2222",
+    "rawSnapshotEvidence": {
+      "file": "candidate-inputs.json",
+      "sha256": "03513d5b7f316fee06a4b5c5854df3a15d5f8f72f19da0126971a985e84eeae6"
+    },
+    "externalScripts": [
+      {
+        "file": "record-command.mjs",
+        "sha256": "4dc0f90c23300db306394d6881d7d54391cfd5645ffcb08dac7ab0097ebca78f"
+      },
+      {
+        "file": "snapshot-candidate.mjs",
+        "sha256": "2f667b444a4ae2f14a8ce635ff8b9db8307ceeb215f8d62f879610d11c78d60a"
+      },
+      {
+        "file": "audit-evidence.mjs",
+        "sha256": "781ff0ffa4c4db8fd01b62a7948091ee0d4eeb8c036577b9ef3e2bc41f9416f6"
+      }
+    ]
+  },
+  "preservation": {
+    "installation": {
+      "unchangedFrom": "53a059c761e9b3591b8513a03309699ecef0c889",
+      "sha256": "adfad6d04870ee8e6f357a19562672671ce854bd950cfcbb7ac2183e4673c928"
+    },
+    "incomingAndUnownedGitBlobs": {
+      "src/compile.ts": "d41d0e28d8626ee32c2fce2de95881359f5ec53f",
+      "src/index.ts": "e224ee82d562e29592166844829474e62f695083",
+      "src/solver.ts": "7a9f3f6cbe45057e1c26dc92f76cccfd3189dd50",
+      "test/index.spec.ts": "bf3930f501f6c33852bd031d874af2046d24c048",
+      "test/incremental.spec.ts": "a8f25ea6f62b44f6af03cca2cb385b31137a164d",
+      "test/incremental-property.spec.ts": "80babe228892a5e44443a6fdeb4a4d46ca1dfa29",
+      "test/incremental-helpers.ts": "936cf2e1dc19be9802bba3520e4c61a06bcabf5f",
+      "test/baseline.json": "db759f95c491e685f27ed12039897dcb10c8e4a1",
+      "test/phase2-benchmark.json": "e838c35c6d99fde7c73627254ecec18255958c58",
+      "test/phase2-benchmark.md": "f2a48a8dfa7b82f8a9bc17e9243490496cc64d12",
+      "test/phase2-benchmark-review.md": "f5ef95dbef43164c20803c1c18a1a8055435f522",
+      "test/phase3-benchmark.json": "d2eb15f01b60a8e639268a94a8081c30570ec6fa",
+      "test/phase3-benchmark.md": "36a6910ad1695d48e73b40b64a4d33cc22dbaada",
+      "test/phase3-benchmark-review.md": "11cdc4c80b8dfd175b134c6eb162eb724ffefbda"
+    }
+  },
+  "sourceFiles": [
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "bytes": 43,
+      "gitBlob": "8af449e730624dda0871ff7483c3b74b1040084b",
+      "sha256": "92b388b64c7dc3611e017c079c94e3e4f5da82da9bebe032503d98cb1050f67f"
+    },
+    {
+      "path": "AGENTS.md",
+      "mode": "100644",
+      "bytes": 6502,
+      "gitBlob": "260ef8102caf7deff4b652e760419a0187be0a4a",
+      "sha256": "c781e33954bebb477b8c29fdf14f7356ec661866bbe6753bf796bdad42c33e34"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "bytes": 23625,
+      "gitBlob": "51ec0779156aa7751e25f7caa8736ce162788c2f",
+      "sha256": "78941a6f5c646e9b3379cb1cdea6bd233d112189abd3b33709178d21d8f11879"
+    },
+    {
+      "path": "biome.json",
+      "mode": "100644",
+      "bytes": 683,
+      "gitBlob": "184c2f06b54e8aaaf900db1f92982f52d839772a",
+      "sha256": "cc81db6309768b07567d34b5f9a0186d9df6f1b485f25efc48b43a455c2ea31e"
+    },
+    {
+      "path": "package-lock.json",
+      "mode": "100644",
+      "bytes": 36795,
+      "gitBlob": "879eab2b092c10295a50fc7c45b9a0a72d306b66",
+      "sha256": "583b6a3fdf8552b86e12254ee4547aa59c751a9e00e35e8799e0a006f13dd789"
+    },
+    {
+      "path": "package.json",
+      "mode": "100644",
+      "bytes": 1054,
+      "gitBlob": "5baacb382a3346290fe772ebf6eba502f687f43d",
+      "sha256": "0528e0870fcf10f6cd545ff7df34fd7c76e811070628e7727d65dd6e8e8350ce"
+    },
+    {
+      "path": "src/compile.ts",
+      "mode": "100644",
+      "bytes": 7616,
+      "gitBlob": "d41d0e28d8626ee32c2fce2de95881359f5ec53f",
+      "sha256": "3e12d751dfe310c19fc59a865b9c5f77efb3a1475c9d861b2a06cc6fa02e4cf6"
+    },
+    {
+      "path": "src/expr.ts",
+      "mode": "100644",
+      "bytes": 2086,
+      "gitBlob": "9182c53e87eb458540dec836aa7049559324d88c",
+      "sha256": "861aec5582e78ab79e59c64cf730c5595a25a319250c3562d882aa5f245dddf4"
+    },
+    {
+      "path": "src/index.ts",
+      "mode": "100644",
+      "bytes": 6554,
+      "gitBlob": "e224ee82d562e29592166844829474e62f695083",
+      "sha256": "d76706c93e4c6b45165fcf27bcbf5d3cf387cbc149cf65a2fcab86fe5f59cd8b"
+    },
+    {
+      "path": "src/solver.ts",
+      "mode": "100644",
+      "bytes": 48052,
+      "gitBlob": "7a9f3f6cbe45057e1c26dc92f76cccfd3189dd50",
+      "sha256": "2c324e89df0f1f99c2f61fc8d8026e87408f7c190beb4a4112b0cb2cbc2bff0f"
+    },
+    {
+      "path": "test/baseline.json",
+      "mode": "100644",
+      "bytes": 793,
+      "gitBlob": "489af8c72ed9c37befa806ccef03404d0a818e61",
+      "sha256": "826b4ce3b30a160ab54be48fefd4ca63affc7707786609bd481aabda6536b8ac"
+    },
+    {
+      "path": "test/bench-comparison.spec.ts",
+      "mode": "100644",
+      "bytes": 52608,
+      "gitBlob": "67c0765dc788b09a46bb72e81938e242a1292048",
+      "sha256": "843dc83a2af4f394f23d359be548f19604524bcaa9643c7e8c6772dd7278b22c"
+    },
+    {
+      "path": "test/bench-comparison.ts",
+      "mode": "100644",
+      "bytes": 20811,
+      "gitBlob": "d772f506aaa8cca9144b731019760240225efce4",
+      "sha256": "e059a617e69286a877c818db79cceadd3715bb3b08abbb05b62956da02f5df13"
+    },
+    {
+      "path": "test/bench.ts",
+      "mode": "100644",
+      "bytes": 6252,
+      "gitBlob": "2ec17eb8971dfa2a752a14f06930055baff62d0c",
+      "sha256": "cf7d343d8420ecc0c402e113d7d7b6b08d7e18cdcfc96e281ea5e9f3b9b5cb68"
+    },
+    {
+      "path": "test/compile.spec.ts",
+      "mode": "100644",
+      "bytes": 12803,
+      "gitBlob": "9a1d0658aed897146f341ffc17a517d24bc1e425",
+      "sha256": "e3369379885672218aa3d6f5a708a09f58e58f21745615b2caa77d61b279e9ac"
+    },
+    {
+      "path": "test/dimacs.spec.ts",
+      "mode": "100644",
+      "bytes": 9830,
+      "gitBlob": "740d8a771c37481b040113b4a8b557789596efd0",
+      "sha256": "792e1ed9749710aa30314624285a1666465fa75a734ef65ac308b65fcc555cd7"
+    },
+    {
+      "path": "test/enumeration.spec.ts",
+      "mode": "100644",
+      "bytes": 40361,
+      "gitBlob": "571ca78563d9c20e5d2cae74fcd19dfe980c742c",
+      "sha256": "963feaf7b2e75d508f7ad1b36f49b456abbe81ae2bb9ffa6f9150c549ca6fe89"
+    },
+    {
+      "path": "test/helpers.spec.ts",
+      "mode": "100644",
+      "bytes": 23194,
+      "gitBlob": "d60867b20cac80db1c0310e8c8ff8238d90d4183",
+      "sha256": "aa94dda1d66751edc4bec663f068a6d532f5110a0768e78ed5e99018b69afc38"
+    },
+    {
+      "path": "test/helpers.ts",
+      "mode": "100644",
+      "bytes": 23485,
+      "gitBlob": "824da88c43094415c677649e49ee3fba3991e6a0",
+      "sha256": "6b4d2556063f52a568fad5e1c87a5ce31789c97088640feb245b3bb636d71d39"
+    },
+    {
+      "path": "test/heuristics.spec.ts",
+      "mode": "100644",
+      "bytes": 25557,
+      "gitBlob": "edfb4f9514b5b6105744a844482f8150f467a768",
+      "sha256": "80c2da73c0d8ac847b840581a3d6adbde35128aaf7a552283cd876970405ea7b"
+    },
+    {
+      "path": "test/incremental-helpers.ts",
+      "mode": "100644",
+      "bytes": 15444,
+      "gitBlob": "936cf2e1dc19be9802bba3520e4c61a06bcabf5f",
+      "sha256": "38d49ef64e3f7545dbbb9493f145efda245da0f4b721cbded925d8dc5dd71bb2"
+    },
+    {
+      "path": "test/incremental-property.spec.ts",
+      "mode": "100644",
+      "bytes": 10443,
+      "gitBlob": "80babe228892a5e44443a6fdeb4a4d46ca1dfa29",
+      "sha256": "51ddd826e412b648d9ea31be5ad7d10d45de1a449777fb70cac2a7407a7be695"
+    },
+    {
+      "path": "test/incremental.spec.ts",
+      "mode": "100644",
+      "bytes": 38496,
+      "gitBlob": "a8f25ea6f62b44f6af03cca2cb385b31137a164d",
+      "sha256": "b4126b5fabd3a729ce2d34347b45ec39889ea7e5b37f6cc5246dac9532913ac7"
+    },
+    {
+      "path": "test/index.spec.ts",
+      "mode": "100644",
+      "bytes": 24646,
+      "gitBlob": "bf3930f501f6c33852bd031d874af2046d24c048",
+      "sha256": "69c16cdc96fd77f493d34905bbb76ab0d9b5bb804a6d271adcc169ba5e744344"
+    },
+    {
+      "path": "test/learning.spec.ts",
+      "mode": "100644",
+      "bytes": 22127,
+      "gitBlob": "bc37f589c79234fc3b98d504a087d7168638bd5a",
+      "sha256": "ec59c04f407ee979dc3038fa93bc7de0d543dd8505a89e4321d5682487db2eee"
+    },
+    {
+      "path": "test/luby.spec.ts",
+      "mode": "100644",
+      "bytes": 5607,
+      "gitBlob": "47f476b180d4cbb1be248ebc469f9a8a615c5bf8",
+      "sha256": "eec287d6b7cb30bd89e78b4444726144ea84faff7dbf9a1398a5c087361cbdea"
+    },
+    {
+      "path": "test/phase2-benchmark-review.md",
+      "mode": "100644",
+      "bytes": 26713,
+      "gitBlob": "f5ef95dbef43164c20803c1c18a1a8055435f522",
+      "sha256": "c5349689e70bf3ba9e2f6b0d5e97c6b0d416827784172a14c388352d289cf4b4"
+    },
+    {
+      "path": "test/phase2-benchmark.json",
+      "mode": "100644",
+      "bytes": 8782,
+      "gitBlob": "e838c35c6d99fde7c73627254ecec18255958c58",
+      "sha256": "830c4bcc5281b2534032de5fa01b5da17f971c1c877999326b18452da5aa7cd4"
+    },
+    {
+      "path": "test/phase2-benchmark.md",
+      "mode": "100644",
+      "bytes": 9262,
+      "gitBlob": "f2a48a8dfa7b82f8a9bc17e9243490496cc64d12",
+      "sha256": "28497122559c9bfe10c72d758d4332dd155b8cbf54af52d59f8074ae03e8a011"
+    },
+    {
+      "path": "test/phase3-benchmark-review.md",
+      "mode": "100644",
+      "bytes": 9654,
+      "gitBlob": "11cdc4c80b8dfd175b134c6eb162eb724ffefbda",
+      "sha256": "b14ec7624a7d452c00478677845506700a46e5165a89688aebdd5aaadfdf12dd"
+    },
+    {
+      "path": "test/phase3-benchmark.json",
+      "mode": "100644",
+      "bytes": 14181,
+      "gitBlob": "d2eb15f01b60a8e639268a94a8081c30570ec6fa",
+      "sha256": "cefb8e62794156441b1154ee7be82a7642446e19bde40ba33d3005a1badd146d"
+    },
+    {
+      "path": "test/phase3-benchmark.md",
+      "mode": "100644",
+      "bytes": 15228,
+      "gitBlob": "36a6910ad1695d48e73b40b64a4d33cc22dbaada",
+      "sha256": "86207b91d9ff6dbfb83aaca76b6cc198f06163bb696a9e058e6e216f456962e3"
+    },
+    {
+      "path": "test/phase4-benchmark.json",
+      "mode": "100644",
+      "bytes": 20562,
+      "gitBlob": "3f75b8d819a6b2e0fed45bed662b3bb575ca2868",
+      "sha256": "4e0bf82088935537737a2e61e011875988a66b703b105c5f6c61c1b5b61ab795"
+    },
+    {
+      "path": "test/phase4-benchmark.md",
+      "mode": "100644",
+      "bytes": 20628,
+      "gitBlob": "669dee20a621d3575a3efe0518739cbc5b54d733",
+      "sha256": "9c42e40e47158d0fb7f47a5a59cbe61b7d02d8ec06f862cf2b5fb3f15a15bc24"
+    },
+    {
+      "path": "test/php-regressions.ts",
+      "mode": "100644",
+      "bytes": 665,
+      "gitBlob": "a72a6f90c60f619fd4da3b32f8e492bae4235f56",
+      "sha256": "23e4fe5ecb01a4747d8176e65b80149a3919265549ac75a329ac0cc76d9f384a"
+    },
+    {
+      "path": "test/property.spec.ts",
+      "mode": "100644",
+      "bytes": 29594,
+      "gitBlob": "78202ea1c05fab0230bdf7736b576073044ee9bd",
+      "sha256": "4e51edcbe7e5881bcd422fda90d4bc901fcb910389e3b669e2155884055b57aa"
+    },
+    {
+      "path": "test/reduction.spec.ts",
+      "mode": "100644",
+      "bytes": 40330,
+      "gitBlob": "d64c25e3641cb20c2f44056bb3a628056ef37825",
+      "sha256": "141c0b8527d076574b8c81482c08c3528621d9bc0e527f1bcfd5b570be88fc1a"
+    },
+    {
+      "path": "test/release-consumer.mjs",
+      "mode": "100644",
+      "bytes": 22418,
+      "gitBlob": "a85028d1aa2d5a2afa72c62e5ba9bc19a78e99f7",
+      "sha256": "612eafc683e685a29fd940aa27e37eaed3353e99bf9c2b6fa0d2ae4767e09a8d"
+    },
+    {
+      "path": "test/release-consumer.mts",
+      "mode": "100644",
+      "bytes": 7312,
+      "gitBlob": "a1ff27b19974510e882adde1b70828526aca1211",
+      "sha256": "6550725dbfe7944098dd024999c63aaed1fe405321de151aabda8a1a08fdf8ba"
+    },
+    {
+      "path": "test/release-smoke.mjs",
+      "mode": "100644",
+      "bytes": 19916,
+      "gitBlob": "f3600954388401d7b920dc9097ce63cc7c1bd6e9",
+      "sha256": "7c367746b8a71c2a16dea2bb5d36103cad7d48975fda320fbc7855e831b41bce"
+    },
+    {
+      "path": "test/restarts.spec.ts",
+      "mode": "100644",
+      "bytes": 31982,
+      "gitBlob": "8ec795beb2501ae9de8eb291be52a3d4a20eae8d",
+      "sha256": "5ae2ebf096858d6e8533290f43c79cae01d694f11db958a13b76bd5e25bc2560"
+    },
+    {
+      "path": "test/solver.spec.ts",
+      "mode": "100644",
+      "bytes": 26409,
+      "gitBlob": "e1b5433cfde471a888764c4559470460e726b642",
+      "sha256": "2230bd73eaf30f9892982e4e487ae980a684d995b3039d08b1f15146f38577c7"
+    },
+    {
+      "path": "tsconfig.json",
+      "mode": "100644",
+      "bytes": 496,
+      "gitBlob": "1a74b7e4e36001e85327efebffd76d22e9c160d7",
+      "sha256": "65e0436ecb036ae4a037af431042e5a55122bbe39de3567e68ee01d6b302418e"
+    }
+  ],
+  "environment": {
+    "node": "v26.8.1",
+    "typescript": "5.4.5",
+    "childNpm": "11.19.0",
+    "benchmarkAndSuiteNodeEnv": null,
+    "benchmarkAndSuiteTsxDisableCache": "1",
+    "consumerNodeEnv": "production",
+    "additionalConsumerRuntimeNodeEnv": null
+  },
+  "gates": [
+    {
+      "name": "workspace-build",
+      "command": "npm run build",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "422dfca46cf812ec37122878490ddef86e032415115a809e2f08f0a7f9363cdb",
+      "stdout": {
+        "file": "workspace-build.stdout.log",
+        "sha256": "8952709042eb29bc6f3825d71a13c5e4e52cf78b48e93e1df7a33e2319781221"
+      },
+      "stderr": {
+        "file": "workspace-build.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "workspace-check",
+      "command": "npm run check",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "678a8aaa036bc9a11814c276dfbee51db45e4e8e577ffefc2011a169e4b6e796",
+      "stdout": {
+        "file": "workspace-check.stdout.log",
+        "sha256": "c6f7df6c343ce95ae1219891c35a7f360daa5439eac4bf57245daf48bc03ef6c"
+      },
+      "stderr": {
+        "file": "workspace-check.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "workspace-strict",
+      "command": "npx --no-install tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/compile.ts src/expr.ts src/index.ts src/solver.ts test/bench-comparison.spec.ts test/bench-comparison.ts test/bench.ts test/compile.spec.ts test/dimacs.spec.ts test/enumeration.spec.ts test/helpers.spec.ts test/helpers.ts test/heuristics.spec.ts test/incremental-helpers.ts test/incremental-property.spec.ts test/incremental.spec.ts test/index.spec.ts test/learning.spec.ts test/luby.spec.ts test/php-regressions.ts test/property.spec.ts test/reduction.spec.ts test/restarts.spec.ts test/solver.spec.ts",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "5ddf2f1e9001deb87af5f6621cfcaca43d16cc5b21955f1b418732bab5312d5f",
+      "stdout": {
+        "file": "workspace-strict.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "file": "workspace-strict.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "workspace-test",
+      "command": "npm test",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "72a4c16f26ddfde963bc12c78d00342908724e186fba6e84badc1942e91b8336",
+      "stdout": {
+        "file": "workspace-test.stdout.log",
+        "sha256": "bac00b9f947983bc60d776b0f6d0fe03e45d7015e89b8fe4cb5cf012392c6f73"
+      },
+      "stderr": {
+        "file": "workspace-test.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "workspace-bench-1",
+      "command": "npm run bench",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "f28bd9f5f0637225f30528fe098dc932d60ff17ea399d6f1889dae82da3139a8",
+      "stdout": {
+        "file": "workspace-bench-1.stdout.log",
+        "sha256": "360c45fc8a20b6e8b741a1633d7f90a1974c3dee8952598c19fb3e8ab24338e2"
+      },
+      "stderr": {
+        "file": "workspace-bench-1.stderr.log",
+        "sha256": "8463966f92e854c2ec52d71f773d938eeb443f2c3a847e361c5f0aea7ec80b36"
+      }
+    },
+    {
+      "name": "workspace-bench-2",
+      "command": "npm run bench",
+      "cwd": "/Users/dalebustad/dev/sat",
+      "exitCode": 0,
+      "recordSha256": "78909b784877d1a857173c289df71c7b9d8e318365f64909c438bd290715b9b9",
+      "stdout": {
+        "file": "workspace-bench-2.stdout.log",
+        "sha256": "904f5694f78cc028e8baf43ffa2596e3588b8c310e95c4921c0a43f9f0b49a1a"
+      },
+      "stderr": {
+        "file": "workspace-bench-2.stderr.log",
+        "sha256": "7b3b419564cbb67eff90fd5e7e89bf8fa47dcf67880246e86d0f0fe3f4b57104"
+      }
+    },
+    {
+      "name": "candidate-ci",
+      "command": "npm ci",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "75b3843dbd042b5cdf6fc5f3896e7223203660bf419be8796b9b713e23fffbc4",
+      "stdout": {
+        "file": "candidate-ci.stdout.log",
+        "sha256": "5a43cfee9e19e73b9cf988ebd854e1b7bbad04737f73a9b9c97379ecb0e0d61f"
+      },
+      "stderr": {
+        "file": "candidate-ci.stderr.log",
+        "sha256": "7af338924ca7befa48fbef90a2b41c09b227c28d668a963c0c3313ea1c94af40"
+      }
+    },
+    {
+      "name": "candidate-build",
+      "command": "npm run build",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "ac05e781885cb10a37ee4691cd2fd0370b62c163a41e96e0ba4ea5eda6c8670f",
+      "stdout": {
+        "file": "candidate-build.stdout.log",
+        "sha256": "8952709042eb29bc6f3825d71a13c5e4e52cf78b48e93e1df7a33e2319781221"
+      },
+      "stderr": {
+        "file": "candidate-build.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-check",
+      "command": "npm run check",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "873267b50b6019c588c89fe810bd0434da0e3fb1942316fc094390ae38a7b0cc",
+      "stdout": {
+        "file": "candidate-check.stdout.log",
+        "sha256": "2da114b1d0642793cdac8a708eff5c95959e95e72838585ef7219836e7b3045e"
+      },
+      "stderr": {
+        "file": "candidate-check.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-strict",
+      "command": "npx --no-install tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/compile.ts src/expr.ts src/index.ts src/solver.ts test/bench-comparison.spec.ts test/bench-comparison.ts test/bench.ts test/compile.spec.ts test/dimacs.spec.ts test/enumeration.spec.ts test/helpers.spec.ts test/helpers.ts test/heuristics.spec.ts test/incremental-helpers.ts test/incremental-property.spec.ts test/incremental.spec.ts test/index.spec.ts test/learning.spec.ts test/luby.spec.ts test/php-regressions.ts test/property.spec.ts test/reduction.spec.ts test/restarts.spec.ts test/solver.spec.ts",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "394baf1aeaf1b5efaa375072b62ae5159e90c7b0b28213d17c649123f4f4da6d",
+      "stdout": {
+        "file": "candidate-strict.stdout.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "file": "candidate-strict.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-test",
+      "command": "npm test",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "c0e79e3953632f76ff7221adb11ea4dbf1002e5b4c833810d8a532486a6dd0be",
+      "stdout": {
+        "file": "candidate-test.stdout.log",
+        "sha256": "ad5daa7773e168e106ea08bb3039d70f4e18c2006b773dbe8adc81a13ac58923"
+      },
+      "stderr": {
+        "file": "candidate-test.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-bench-1",
+      "command": "npm run bench",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "eef2965aa563fbda09a3185045f26b7647180604e4f2d3b03007bdc7cbb5c6e9",
+      "stdout": {
+        "file": "candidate-bench-1.stdout.log",
+        "sha256": "2da7050f4d1610d6c475bc1ad79408ab56f5f1c39f555b9c9cbfb9d791ff9c86"
+      },
+      "stderr": {
+        "file": "candidate-bench-1.stderr.log",
+        "sha256": "3d2fd3dec20f93e7cd6b26de0d9aa0dfe74a99be2c8138bfa81db5e200bc3e87"
+      }
+    },
+    {
+      "name": "candidate-bench-2",
+      "command": "npm run bench",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "886f1192c41a7a81c8b17189ebe35ab57fc701d6f902c4e951ac538dfb0ebc3f",
+      "stdout": {
+        "file": "candidate-bench-2.stdout.log",
+        "sha256": "bbcb983174629f12661e4a0b1a27a1edc20a66d21a47978810fdda67a0ec8400"
+      },
+      "stderr": {
+        "file": "candidate-bench-2.stderr.log",
+        "sha256": "3497cd4c9821a87f0bc4c8af7afadfa8b33ea916d9fb0d04e6791c65f356469f"
+      }
+    },
+    {
+      "name": "candidate-pack",
+      "command": "npm pack --json --pack-destination /var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "55d8c5426e62f8685a6cb36bb63467017c834e1d7d9cea6b72ab36c3f796ed58",
+      "stdout": {
+        "file": "candidate-pack.stdout.log",
+        "sha256": "f318476356fd77c41ccc533437a9b416766cc02827e345349eef44f230c2cb2e"
+      },
+      "stderr": {
+        "file": "candidate-pack.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-smoke",
+      "command": "node test/release-smoke.mjs /var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/divmain-sat-2.0.0.tgz /var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/consumer",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "306b1f2629e66b7d2b46fa669b3d248b40307b4a5bd03fbc7885f7d695fc24b9",
+      "stdout": {
+        "file": "candidate-smoke.stdout.log",
+        "sha256": "5b29bd427d9e8332a1d637e477ad926ceea3f047d74ad9d06be27ead73cdebc9"
+      },
+      "stderr": {
+        "file": "candidate-smoke.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "consumer-runtime-development",
+      "command": "node release-consumer.mjs runtime",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/consumer",
+      "exitCode": 0,
+      "recordSha256": "e79fb8ced28be70d22984b61a1a20719a654dbf4892a0d0f65b7fc4f9a541b40",
+      "stdout": {
+        "file": "consumer-runtime-development.stdout.log",
+        "sha256": "91ca8d9212ccce3aa497b76119bf83f5c2225ec3675d321c14ea0608256fc3bf"
+      },
+      "stderr": {
+        "file": "consumer-runtime-development.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "name": "candidate-runtime-dependencies-audit",
+      "command": "npm audit --omit=dev --json",
+      "cwd": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/candidate",
+      "exitCode": 0,
+      "recordSha256": "58704abcb1892fb90ff18583a9a35e2608caa6d402e56b476c98021de6e3bbed",
+      "stdout": {
+        "file": "candidate-runtime-dependencies-audit.stdout.log",
+        "sha256": "f8804da8e8359012b105cc9969f57de788667e21f5d3afd318a689a52572c4bd"
+      },
+      "stderr": {
+        "file": "candidate-runtime-dependencies-audit.stderr.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "tests": [
+    {
+      "location": "workspace",
+      "tests": 668,
+      "suites": 77,
+      "passed": 668,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "coverage": [
+        {
+          "file": "src/compile.ts",
+          "line": 99.5,
+          "branch": 98.28,
+          "functions": 100
+        },
+        {
+          "file": "src/solver.ts",
+          "line": 98.65,
+          "branch": 92.13,
+          "functions": 100
+        }
+      ]
+    },
+    {
+      "location": "candidate",
+      "tests": 668,
+      "suites": 77,
+      "passed": 668,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "coverage": [
+        {
+          "file": "src/compile.ts",
+          "line": 99.5,
+          "branch": 98.28,
+          "functions": 100
+        },
+        {
+          "file": "src/solver.ts",
+          "line": 98.65,
+          "branch": 92.13,
+          "functions": 100
+        }
+      ]
+    }
+  ],
+  "benchmark": {
+    "artifacts": [
+      {
+        "path": "test/phase4-benchmark.json",
+        "gitBlob": "3f75b8d819a6b2e0fed45bed662b3bb575ca2868",
+        "sha256": "4e0bf82088935537737a2e61e011875988a66b703b105c5f6c61c1b5b61ab795"
+      },
+      {
+        "path": "test/phase4-benchmark.md",
+        "gitBlob": "669dee20a621d3575a3efe0518739cbc5b54d733",
+        "sha256": "9c42e40e47158d0fb7f47a5a59cbe61b7d02d8ec06f862cf2b5fb3f15a15bc24"
+      }
+    ],
+    "realRuns": 4,
+    "allRunsByteIdentical": true,
+    "fixtures": 8,
+    "historicalComparisonsPerRun": 144,
+    "phase3CounterParity": true,
+    "countRegressionsAgainstPhase2": 9,
+    "largePhpConflictCaps": [7230, 36270],
+    "scope": "Single-shot only; no incremental/enumeration performance or total-memory claims."
+  },
+  "package": {
+    "version": "2.0.0",
+    "dependencies": {},
+    "files": ["dist"],
+    "enginesPresent": false,
+    "metadataDecision": "Existing main dist/index.js resolves both Node ESM and adjacent declarations; no speculative types/exports changes needed.",
+    "tarball": {
+      "path": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/divmain-sat-2.0.0.tgz",
+      "requestedPath": "/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/divmain-sat-2.0.0.tgz",
+      "bytes": 41105,
+      "sha256": "6a2384999c4b14f00699ea36d1c118c4a736c40d39537a918a1f5a202b6ada41",
+      "sha512": "68269894650b3ff9053721e2de620105d8d3780de3ea0aa71e95f9658383e0b93b241bd0d60b95bdf649e14ba33f80b4f5e0e983cccc593ba435ba969d958b1d",
+      "integrity": "sha512-aCaYlGULP/kFNyHi3mIBBdjTeA3j6gqnHpX5ZYOD4Lk7JBvQ1guVvfZJ4UujP4C09eDpg8zMWTukNbqWnZWLHQ=="
+    },
+    "installedConsumer": "/private/var/folders/w4/8_bbh5gn5ds4766m6bbkz8b40000gn/T/opencode/sat-aa07-release-20260906/consumer",
+    "evidence": {
+      "file": "consumer/release-evidence.json",
+      "sha256": "68a64d9541439db43adbcd28d2817e6b98f0d5947676f46366c2d2bf05e46979"
+    },
+    "installedFiles": [
+      {
+        "path": "README.md",
+        "bytes": 23625,
+        "sha256": "78941a6f5c646e9b3379cb1cdea6bd233d112189abd3b33709178d21d8f11879"
+      },
+      {
+        "path": "dist/compile.d.ts",
+        "bytes": 938,
+        "sha256": "6915cbd3c6864a06ce19126932106dad95979fc415aaa2035c63c832b23a19b4"
+      },
+      {
+        "path": "dist/compile.js",
+        "bytes": 13263,
+        "sha256": "a0d7775120e22601a2a2ed875931ee451d4301f1ab9a875a07ec13e910a1d65b"
+      },
+      {
+        "path": "dist/expr.d.ts",
+        "bytes": 1004,
+        "sha256": "2e1e54338ab92db0bd5dda4d474b366cc57f8fbadf732c610d6cfc6dfab3f4eb"
+      },
+      {
+        "path": "dist/expr.js",
+        "bytes": 4235,
+        "sha256": "95b87680a58687c9709f37ab29d00fb2605ef6eaa3599dacd76cb3d7f8628ed7"
+      },
+      {
+        "path": "dist/index.d.ts",
+        "bytes": 4346,
+        "sha256": "15232787905215b5930c181d33fe2add1f4ace8e44b9216b5ac532442b107e97"
+      },
+      {
+        "path": "dist/index.js",
+        "bytes": 7448,
+        "sha256": "8699b14b4c1a57d16143f2549cdb3b9b39ead36a798d57cd4d9893caef63024f"
+      },
+      {
+        "path": "dist/solver.d.ts",
+        "bytes": 3139,
+        "sha256": "d22c1208127489f483a102fbe2bac8e352598cc2dbab4df2fc8d86c3a79b55c7"
+      },
+      {
+        "path": "dist/solver.js",
+        "bytes": 101575,
+        "sha256": "5deae8ed95b54e083dcb9512460d897d79d89fba203115a78cc199394f691355"
+      },
+      {
+        "path": "package.json",
+        "bytes": 1054,
+        "sha256": "0528e0870fcf10f6cd545ff7df34fd7c76e811070628e7727d65dd6e8e8350ce"
+      }
+    ],
+    "runtimeExports": [
+      "Value",
+      "and",
+      "createSolver",
+      "getAllSolutions",
+      "getSolution",
+      "implies",
+      "not",
+      "or",
+      "xor"
+    ],
+    "typeOnlyExports": [
+      "BooleanExpr",
+      "SatSolver",
+      "SolveOptions",
+      "SolverStats",
+      "Variable",
+      "VariableAssignments",
+      "VariablePriority"
+    ],
+    "negativeTypeChecks": 39,
+    "runtimeProbeGroups": 10,
+    "strictNoAmbientLeakage": true,
+    "plainNodeBothEnvironments": true,
+    "readmeSha256": "78941a6f5c646e9b3379cb1cdea6bd233d112189abd3b33709178d21d8f11879",
+    "readmeExamples": [
+      {
+        "heading": "Basic Usage",
+        "language": "javascript",
+        "file": "readme/1-basic-usage.mjs",
+        "sha256": "b95ab30b62870b4294e019c680571368e308ef97f939b3d98b52401b78c71006",
+        "emittedSha256": "b95ab30b62870b4294e019c680571368e308ef97f939b3d98b52401b78c71006",
+        "status": "passed"
+      },
+      {
+        "heading": "Finding a Single Solution",
+        "language": "javascript",
+        "file": "readme/2-finding-a-single-solution.mjs",
+        "sha256": "9245e39ce85f8b2dc3dc6b090a949abbc6a1f6b8b6b664c39ebb7f2d95277f46",
+        "emittedSha256": "9245e39ce85f8b2dc3dc6b090a949abbc6a1f6b8b6b664c39ebb7f2d95277f46",
+        "status": "passed"
+      },
+      {
+        "heading": "Finding All Solutions",
+        "language": "javascript",
+        "file": "readme/3-finding-all-solutions.mjs",
+        "sha256": "77a02084e87847bd6a487572e943891b958c2fe3f266d962551878429649e22e",
+        "emittedSha256": "77a02084e87847bd6a487572e943891b958c2fe3f266d962551878429649e22e",
+        "status": "passed"
+      },
+      {
+        "heading": "Reusing a Compiled Solver",
+        "language": "javascript",
+        "file": "readme/4-reusing-a-compiled-solver.mjs",
+        "sha256": "cd4358fe0ef1abc9ec22ed869239f4d2d2a4e84305c4e6b9dd5565c964cda238",
+        "emittedSha256": "cd4358fe0ef1abc9ec22ed869239f4d2d2a4e84305c4e6b9dd5565c964cda238",
+        "status": "passed"
+      },
+      {
+        "heading": "`SolverStats`",
+        "language": "javascript",
+        "file": "readme/5-solverstats.mjs",
+        "sha256": "7d0601099b35c02a0177e0209d306ef3a1240dcc76b69700b4fe44a93df9d802",
+        "emittedSha256": "7d0601099b35c02a0177e0209d306ef3a1240dcc76b69700b4fe44a93df9d802",
+        "status": "passed"
+      },
+      {
+        "heading": "Ported Hypergraph Heuristic",
+        "language": "typescript",
+        "file": "readme/6-ported-hypergraph-heuristic.mts",
+        "sha256": "c04b037fba216e026211e69fa11473656d26c3449f5e633c87c835c4a32e63ac",
+        "emittedSha256": "590e49a9240497bb8055533e95431d1272232b0602fe1cae44c5f3507921241b",
+        "status": "passed"
+      }
+    ]
+  },
+  "limitations": [
+    "Candidate working tree is an explicit uncommitted overlay, not Git-clean. No commits or active workspace index changes were made.",
+    "npm ci succeeded but reported pre-existing dev-tree vulnerabilities (2 moderate, 2 high), old transitive-tool deprecations, and install-script notices. Runtime-only npm audit returned zero vulnerabilities; dependency lock entries were not changed.",
+    "Node26 TSX DEP0205 warnings remain visible. Benchmark timings are console-only, not speedup evidence.",
+    "Compiler nesting is recursive; core search is iterative. Exponential SAT/enumeration cost, output/blocker growth, and protected learned clauses preclude total-memory guarantees.",
+    "Tarball remains only in preapproved scratch; *.tgz is ignored. Nothing was published, committed, tagged, staged in the active workspace, or pushed.",
+    "Parent task-2c7f and independent Phase-4 verification/commit remain outstanding; objv-b2ca is not satisfied here."
+  ]
+}
