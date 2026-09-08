@@ -4,12 +4,14 @@
     "enabled": false
   },
   "files": {
-    "ignore": ["*.excessive-spec.js"]
+    "ignore": ["*.excessive-spec.js"],
+    "maxSize": 3000000
   },
   "formatter": {
     "indentStyle": "space",
     "indentWidth": 2,
-    "lineWidth": 100
+    "lineWidth": 100,
+    "ignore": ["test/v3-baseline.json", "test/legacy-compiled-cnf.json"]
   },
   "javascript": {
     "formatter": {
