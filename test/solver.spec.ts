@@ -4,7 +4,7 @@ import { compile, negLit, posLit, varOf } from '../src/compile.js';
 import type { Clause, CompiledCnf } from '../src/compile.js';
 import { and, implies, or, Value, xor, not } from '../src/expr.js';
 import type { VariableAssignments } from '../src/expr.js';
-import { Solver } from '../src/solver.js';
+import { Solver, setDebugAssertions } from '../src/solver.js';
 import type { SolverStats } from '../src/solver.js';
 import {
   expressionValue,
@@ -67,6 +67,11 @@ describe('Solver enqueue, trail, and decision levels', () => {
   });
 
   it('debug assertions detect an assigns/trail invariant violation', () => {
+    // Audits are opt-in at runtime: this test opts in explicitly so the
+    // invariant throw is exercised even without the suite-wide preload.
+    // Leaving audits on afterwards only strengthens coverage.
+    setDebugAssertions(true);
+
     const solver = new Solver(handBuiltCnf(['a'], []));
     solver.assigns[0] = Value.TRUE;
 

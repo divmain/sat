@@ -1,21 +1,44 @@
 {
   "name": "@divmain/sat",
   "version": "2.0.0",
+  "description": "Zero-dependency SAT solver for TypeScript: Tseitin-compiled boolean formulas, CDCL solving, and complete model enumeration.",
   "type": "module",
-  "description": "",
   "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "dist"
   ],
+  "sideEffects": false,
+  "keywords": [
+    "sat",
+    "satisfiability",
+    "boolean",
+    "solver",
+    "cdcl"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/divmain/sat.git"
+  },
+  "homepage": "https://github.com/divmain/sat#readme",
+  "bugs": "https://github.com/divmain/sat/issues",
   "scripts": {
     "bench": "tsx ./test/bench.ts",
+    "bench:legacy": "tsx ./test/bench.ts",
     "build": "tsc",
     "check": "biome check ./src ./test",
+    "typecheck": "tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/*.ts test/*.ts",
     "fix": "biome check --apply ./src ./test",
-    "test": "globstar -- tsx --test --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
-    "test-watch": "globstar -- tsx --test --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'",
-    "test-only": "globstar -- tsx --test-only --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
-    "test-only-watch": "globstar -- tsx --test-only --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'"
+    "test": "globstar -- tsx --import ./test/debug.ts --test --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
+    "test-watch": "globstar -- tsx --import ./test/debug.ts --test --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'",
+    "test-only": "globstar -- tsx --import ./test/debug.ts --test-only --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
+    "test-only-watch": "globstar -- tsx --import ./test/debug.ts --test-only --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'"
   },
   "author": "Dale Bustad <github@dale.link>",
   "license": "MIT",

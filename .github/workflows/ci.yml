@@ -1,0 +1,32 @@
+# The test suite and benchmark verifier authenticate Git history by design:
+# frozen Phase-2/3/4 artifacts are validated against pinned commits, blobs, and
+# SHA-256s, so the checkout must carry the full commit history and objects
+# (fetch-depth: 0), never a shallow clone or source archive.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run check
+      - run: npm run typecheck
+      # The 59,049-model enumeration stress alone takes several minutes.
+      - run: npm test
+        timeout-minutes: 45
+      # Assert-only legacy verifier: authenticates frozen evidence, writes nothing.
+      - run: npm run bench:legacy

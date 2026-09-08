@@ -43,10 +43,23 @@ interface SolverOptions {
   learnedClauseReductionThreshold?: number | undefined;
 }
 
-// Gates the trail-invariant audits in enqueue/cancelUntil/propagate. The
-// NODE_ENV check lets bundlers fold it to a constant and dead-code-eliminate
-// the audits in production builds, while keeping them on by default in dev.
-const DEBUG_ASSERTIONS = process.env.NODE_ENV !== 'production';
+// Gates the trail-invariant audits in enqueue/cancelUntil/propagate. Audits
+// are opt-in so default consumers pay nothing for them: the flag initializes
+// from SAT_DEBUG=1 through fully guarded optional access — the library's
+// single platform-specific reference, importable even where that global is
+// absent (browser ESM) — and setDebugAssertions flips it at runtime. Audits
+// read the flag at call time, so toggling never depends on import order. The
+// test suite enables them globally through its `--import ./test/debug.ts`
+// preload.
+let debugAssertions = globalThis.process?.env?.SAT_DEBUG === '1';
+
+/**
+ * Runtime audit toggle for the test suite. Internal seam: exported from the
+ * internal solver module only, never re-exported from the package API.
+ */
+export function setDebugAssertions(enabled: boolean): void {
+  debugAssertions = enabled;
+}
 
 // One-based Luby sequence: S_k = S_(k-1), S_(k-1), 2^(k-1).
 // Find the containing block, then descend iteratively into its two copies.
@@ -113,6 +126,18 @@ export class Solver {
   // Semantic clause identity must not depend on the mutable watch order.
   private readonly clauseByKey = new Map<string, Clause>();
   private readonly seen: Uint8Array;
+  // Variables marked in `seen` by the most recent analyze() call. Entry-time
+  // cleanup reverts exactly these marks instead of refilling the whole array,
+  // so per-conflict clearing costs O(touched) rather than O(numVars).
+  private readonly seenTouched: number[] = [];
+  // Trusted handoff from analyze(): the clause object it just produced plus
+  // the already-normalized (sorted, deduplicated, tautology-free) literal
+  // vector behind it. The search registers analyze()'s result through
+  // addLearnedClause() immediately, so that path reuses this vector and
+  // normalization runs exactly once per learned clause. Every other caller —
+  // and any clause object that does not match this handoff — normalizes in
+  // full; the handoff is consumed on first use.
+  private analyzedNormalized: { clause: Clause; normalized: number[] } | null = null;
   private varInc = 1;
   // Indexed binary max-heap, ordered by activity then LOWER variable index.
   // Only named variables have positions; -1 means absent. Assignments made
@@ -338,16 +363,28 @@ export class Solver {
   // assignments backwards, including the tail not yet processed by propagate.
   // A count of one current-level literal is the first UIP, even if its reason
   // is non-null; resolving past it would instead learn a later/decision UIP.
+  // The O(clause) invariant scans (falsified conflict clause, falsified reason
+  // antecedents) are debug audits, like the trail checks: they run throughout
+  // the test suite and cost default consumers nothing.
   analyze(conflict: Clause): { learned: Clause; backjumpLevel: number } {
     const currentLevel = this.trailLim.length;
     if (currentLevel === 0) {
       throw new Error('conflict analysis requires a nonzero decision level');
     }
-    if (!conflict.lits.every((lit) => litValue(lit, this.assigns) === Value.FALSE)) {
+    if (
+      debugAssertions &&
+      !conflict.lits.every((lit) => litValue(lit, this.assigns) === Value.FALSE)
+    ) {
       throw new Error('conflict analysis requires a falsified clause');
     }
 
-    this.seen.fill(0);
+    // Touched-only clearing: revert exactly the marks the previous analysis
+    // left behind (the list survives even a throwing analysis) instead of
+    // refilling the entire array once per conflict.
+    for (let index = 0; index < this.seenTouched.length; index += 1) {
+      this.seen[this.seenTouched[index]] = 0;
+    }
+    this.seenTouched.length = 0;
     const learnedLits: number[] = [];
     let currentCount = 0;
     let trailIndex = this.trail.length - 1;
@@ -365,10 +402,11 @@ export class Solver {
         if (variable === resolvedVariable || this.seen[variable] !== 0) {
           continue;
         }
-        if (litValue(lit, this.assigns) !== Value.FALSE) {
+        if (debugAssertions && litValue(lit, this.assigns) !== Value.FALSE) {
           throw new Error('conflict analysis reason antecedents must be falsified');
         }
         this.seen[variable] = 1;
+        this.seenTouched.push(variable);
         // Once per seen variable, including root antecedents, auxiliaries
         // and variables that disappear from the learned clause by resolution.
         this.bumpVariableActivity(variable);
@@ -424,8 +462,13 @@ export class Solver {
     // MiniSat's relative decay: future conflicts get a larger increment.
     // This must follow ALL bumps (and any rescaling) for this conflict.
     this.varInc *= 1 / 0.95;
+    const learned: Clause = { lits, learned: true, activity: 0, lbd };
+    // Hand the already-normalized vector to the search's immediate
+    // registration (see analyzedNormalized): addLearnedClause re-normalizing
+    // it would repeat this conflict's most expensive analysis step.
+    this.analyzedNormalized = { clause: learned, normalized };
     return {
-      learned: { lits, learned: true, activity: 0, lbd },
+      learned,
       backjumpLevel: lits.length === 1 ? 0 : this.level[varOf(lits[1])],
     };
   }
@@ -436,7 +479,17 @@ export class Solver {
   // reasons, the database and watches must never use separate equal clauses.
   // This does not enqueue, particularly not a learned unit at the OLD level.
   addLearnedClause(learned: Clause): Clause {
-    const normalized = normalizeClauseLits(learned.lits);
+    let normalized: number[] | null;
+    const handoff = this.analyzedNormalized;
+    if (handoff !== null && handoff.clause === learned) {
+      // Trusted internal path: analyze() normalized this exact vector on the
+      // way out, so registration runs normalization exactly once per learned
+      // clause. Consumed on use; re-registration always normalizes in full.
+      normalized = handoff.normalized;
+      this.analyzedNormalized = null;
+    } else {
+      normalized = normalizeClauseLits(learned.lits);
+    }
     if (normalized === null || normalized.length === 0) {
       throw new Error('a learned clause must be nonempty and non-tautological');
     }
@@ -1188,7 +1241,7 @@ export class Solver {
   }
 
   private assertTrailInvariant(): void {
-    if (!DEBUG_ASSERTIONS) {
+    if (!debugAssertions) {
       return;
     }
 

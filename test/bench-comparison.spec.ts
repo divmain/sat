@@ -10,22 +10,35 @@ import { Solver } from '../src/solver.js';
 import type { SolverStats } from '../src/solver.js';
 import {
   assertBenchmarkResult,
+  assertPhase4Manifest,
+  assertPhase4Record,
+  assertPhase4Sources,
   assertReferenceChain,
   assertSourcesUnchanged,
   benchmarkFixtures,
   comparisonCells,
   COUNTERS,
   createPhase4Report,
+  loadPhase4Record,
   loadReferences,
   PHASE1_REFERENCE,
   PHASE2_REFERENCE,
   PHASE3_REFERENCE,
+  PHASE4_MANIFEST_REFERENCE,
+  PHASE4_MARKDOWN_REFERENCE,
+  PHASE4_REFERENCE,
   sha256,
   verifyFixtures,
 } from './bench-comparison.js';
-import type { BenchmarkFixture, BenchmarkReferences, BenchmarkResult } from './bench-comparison.js';
+import type {
+  BenchmarkFixture,
+  BenchmarkReferences,
+  BenchmarkResult,
+  Phase4Record,
+  Phase4ReleaseManifest,
+} from './bench-comparison.js';
 import { runBenchmark, sourceSnapshot } from './bench.js';
-import type { BenchmarkOptions } from './bench.js';
+import type { BenchmarkOptions, VerifyMode } from './bench.js';
 import { cnfToExpr, expressionValue, phpCnf } from './helpers.js';
 
 describe('benchmark comparison cells', () => {
@@ -120,6 +133,10 @@ const readGit = (args: string[]): Buffer => {
 const references = loadReferences(readGit);
 const fixtures = benchmarkFixtures();
 const historicalReferences = [PHASE1_REFERENCE, PHASE2_REFERENCE, PHASE3_REFERENCE];
+const phase4References = [PHASE4_REFERENCE, PHASE4_MARKDOWN_REFERENCE, PHASE4_MANIFEST_REFERENCE];
+const allReferences = [...historicalReferences, ...phase4References];
+const modes: VerifyMode[] = ['parity', 'gates'];
+const phase4Record = loadPhase4Record(readGit, references);
 
 describe('benchmark reference and fixture authentication', () => {
   it('uses full immutable Git references and preserves historical working-byte provenance', () => {
@@ -446,6 +463,195 @@ describe('benchmark reference and fixture authentication', () => {
           { 'src/solver.ts': { ...version, ctimeNs: 2n } },
         ),
       /Benchmark input changed during the run/,
+    );
+  });
+});
+
+describe('Phase-4 record authentication (release commit, manifest, embedded sources)', () => {
+  it('authenticates the frozen record, markdown, and manifest from the release commit in one load', () => {
+    const calls: string[][] = [];
+    const record = loadPhase4Record((args) => {
+      calls.push(args);
+      return readGit(args);
+    }, references);
+    assert.deepEqual(record, phase4Record);
+    for (const reference of phase4References) {
+      assert.ok(
+        calls.some((args) => args.join(' ') === `show ${reference.commit}:${reference.path}`),
+        `must read ${reference.path} from the release commit`,
+      );
+      assert.equal(reference.commit.length, 40);
+      assert.equal(reference.gitBlob.length, 40);
+      assert.equal(reference.sha256.length, 64);
+      const bytes = readGit(['show', `${reference.commit}:${reference.path}`]);
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), reference.sha256);
+      assert.equal(
+        readGit(['rev-parse', '--verify', `${reference.commit}:${reference.path}`])
+          .toString('utf8')
+          .trim(),
+        reference.gitBlob,
+      );
+    }
+    for (const path of Object.keys(phase4Record.implementation.sourceSha256)) {
+      assert.ok(
+        calls.some((args) => args.join(' ') === `show ${PHASE4_REFERENCE.commit}:${path}`),
+        `must verify the embedded fingerprint of ${path} against the release commit`,
+      );
+    }
+    assert.ok(
+      calls.every((args) => !args.includes('HEAD')),
+      'Phase-4 authentication must use the pinned artifact commit, never recorded HEAD',
+    );
+  });
+
+  for (const reference of phase4References) {
+    it(`fails closed when ${reference.path} history is missing`, () => {
+      const missing = new Error(`missing pinned Phase-4 history: ${reference.path}`);
+      assert.throws(
+        () =>
+          loadPhase4Record((args) => {
+            if (args[0] === 'show' && args[1] === `${reference.commit}:${reference.path}`) {
+              throw missing;
+            }
+            return readGit(args);
+          }, references),
+        (error) => error === missing,
+      );
+    });
+
+    it(`rejects modified ${reference.path} bytes before parsing them`, () => {
+      assert.throws(
+        () =>
+          loadPhase4Record(
+            (args) =>
+              args[0] === 'show' && args[1] === `${reference.commit}:${reference.path}`
+                ? Buffer.from('{}')
+                : readGit(args),
+            references,
+          ),
+        /reference blob mismatch/,
+      );
+    });
+  }
+
+  it('cross-checks the manifest artifact identities against the pinned Phase-4 references', () => {
+    const manifest = JSON.parse(
+      readGit([
+        'show',
+        `${PHASE4_MANIFEST_REFERENCE.commit}:${PHASE4_MANIFEST_REFERENCE.path}`,
+      ]).toString('utf8'),
+    ) as Phase4ReleaseManifest;
+    assertPhase4Manifest(manifest);
+    const changes: Array<(value: Phase4ReleaseManifest) => void> = [
+      (value) => {
+        value.benchmark.artifacts.pop();
+      },
+      (value) => {
+        value.benchmark.artifacts[0].path = 'test/other.json';
+      },
+      (value) => {
+        value.benchmark.artifacts[0].gitBlob = '0'.repeat(40);
+      },
+      (value) => {
+        value.benchmark.artifacts[0].sha256 = '0'.repeat(64);
+      },
+      (value) => {
+        value.benchmark.artifacts[1].gitBlob = '0'.repeat(40);
+      },
+      (value) => {
+        value.benchmark.artifacts[1].sha256 = '0'.repeat(64);
+      },
+    ];
+    for (const change of changes) {
+      const changed = structuredClone(manifest);
+      change(changed);
+      assert.throws(() => assertPhase4Manifest(changed), /Phase-4 manifest/);
+    }
+  });
+
+  it('rejects decoded record tampering against the authenticated Phase-1/2/3 chain', () => {
+    const changes: Array<(record: Phase4Record) => void> = [
+      (record) => {
+        record.phase = 'Phase3';
+      },
+      (record) => {
+        record.scope = 'incremental';
+      },
+      (record) => {
+        record.references.phase1.commit = '0'.repeat(40);
+      },
+      (record) => {
+        record.references.phase2.gitBlob = '0'.repeat(40);
+      },
+      (record) => {
+        record.references.phase3.sha256 = '0'.repeat(64);
+      },
+      (record) => {
+        record.references.phase3.provenance.references.phase2.commit = '0'.repeat(40);
+      },
+      (record) => {
+        record.references.phase3.provenance.implementation.nodeEnv = 'production';
+      },
+      (record) => {
+        record.entries[0].verdict = 'UNSAT';
+      },
+      (record) => {
+        record.entries[0].phase2.decisions = 3;
+      },
+      (record) => {
+        record.entries[0].phase3.conflicts = 1;
+      },
+      (record) => {
+        record.entries[0].fixtureSha256 = '0'.repeat(64);
+      },
+      (record) => {
+        record.entries[0].maxConflicts += 1;
+      },
+      (record) => {
+        record.entries[0].phase4.decisions = -1;
+      },
+      (record) => {
+        record.entries.pop();
+      },
+    ];
+    for (const change of changes) {
+      const changed = structuredClone(phase4Record);
+      change(changed);
+      assert.throws(
+        () => assertPhase4Record(changed, references),
+        /Phase-4 record (?:phase|scope|provenance|coverage) disagreement|missing from Phase-3 evidence|disagrees with authenticated Phase-3 evidence|non-negative integer/,
+      );
+    }
+  });
+
+  it('verifies embedded Phase-4 source fingerprints against release-commit bytes, independent of edited working files', () => {
+    // Today's bench.ts is a verifier, not the historical bytes hashed into the record.
+    const working = sha256(readFileSync(new URL('../test/bench.ts', import.meta.url)));
+    assert.notEqual(
+      working,
+      phase4Record.implementation.sourceSha256['test/bench.ts'],
+      'precondition: the working bench.ts differs from the frozen release-commit bytes',
+    );
+    assertPhase4Sources(phase4Record, readGit);
+    const unavailable = new Error('missing historical source: test/bench.ts');
+    assert.throws(
+      () =>
+        assertPhase4Sources(phase4Record, (args) => {
+          if (args[1] === `${PHASE4_REFERENCE.commit}:test/bench.ts`) {
+            throw unavailable;
+          }
+          return readGit(args);
+        }),
+      (error) => error === unavailable,
+    );
+    assert.throws(
+      () =>
+        assertPhase4Sources(phase4Record, (args) =>
+          args[1] === `${PHASE4_REFERENCE.commit}:test/bench.ts`
+            ? Buffer.from('modified historical source')
+            : readGit(args),
+        ),
+      /Phase-4 source provenance mismatch: test\/bench\.ts/,
     );
   });
 });
@@ -937,11 +1143,10 @@ describe('Phase-4 synthetic report rendering (not runner/model validation, no ar
   });
 });
 
-// Exercise the actual runner, including SAT model validation and the two-write boundary.
+// Exercise the actual verifier, including SAT model validation and both modes.
 // Only PHP searches are stubbed with historical counts/UNSAT; these are NOT new measurements.
 function runnerControl() {
   const instances = benchmarkFixtures();
-  const writes: Array<{ url: URL; content: string }> = [];
   const logs: string[] = [];
   const events: string[] = [];
   const snapshots: ReturnType<typeof sourceSnapshot>[] = [];
@@ -996,10 +1201,6 @@ function runnerControl() {
       events.push('fixtures');
       return instances;
     },
-    write: (url, content) => {
-      events.push('write');
-      writes.push({ url, content });
-    },
     log: (message) => {
       logs.push(message);
     },
@@ -1008,7 +1209,6 @@ function runnerControl() {
     options,
     runtime,
     instances,
-    writes,
     logs,
     events,
     snapshots,
@@ -1019,189 +1219,215 @@ function runnerControl() {
   };
 }
 
-describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP searches)', () => {
-  it('validates real models and captures exactly TWO distinct Phase-4 writes', async () => {
-    const control = runnerControl();
-    await runBenchmark(control.options);
-    assert.deepEqual(
-      control.writes.map(({ url }) => url.href),
-      [
-        new URL('./phase4-benchmark.json', import.meta.url).href,
-        new URL('./phase4-benchmark.md', import.meta.url).href,
-      ],
-    );
-    assert.equal(control.compiled.length, 8);
-    assert.equal(new Set(control.compiled).size, 8);
-    assert.equal(new Set(control.solvers).size, 8);
-    assert.deepEqual(
-      control.models.map(({ index }) => index),
-      [0, 3, 4, 5],
-    );
-    for (const { index, model } of control.models) {
-      assert.equal(expressionValue(control.instances[index].expr, model), Value.TRUE);
-    }
-    for (const [index, options] of control.solverOptions.entries()) {
-      const fixture = control.instances[index].fixture;
-      assert.deepEqual(options, {
-        assumptions: fixture.assumptions,
-        enablePle: true,
-        maxConflicts: fixture.maxConflicts,
-      });
-      assert.notEqual(options?.assumptions, fixture.assumptions);
-    }
-    assert.deepEqual(control.events.slice(0, 4), [
-      'snapshot',
-      'load solver',
-      'snapshot',
-      'fixtures',
-    ]);
-    assert.deepEqual(control.events.slice(-3), ['snapshot', 'write', 'write']);
-    assert.equal(control.snapshots.length, 3);
-    const before = control.snapshots[0];
-    for (const path of [
-      'src/compile.ts',
-      'src/expr.ts',
-      'src/index.ts',
-      'src/solver.ts',
-      'test/bench.ts',
-      'test/bench-comparison.ts',
-      'test/helpers.ts',
-      'test/php-regressions.ts',
-      'package.json',
-      'package-lock.json',
-      'tsconfig.json',
-    ]) {
-      const url = new URL(`../${path}`, import.meta.url);
-      const { ino, mtimeNs, ctimeNs } = statSync(url, { bigint: true });
-      assert.deepEqual(before[path], { sha256: sha256(readFileSync(url)), ino, mtimeNs, ctimeNs });
-    }
-    const json = control.writes[0].content;
-    const report = JSON.parse(json) as ReturnType<typeof createPhase4Report>['report'];
-    assert.equal(json, `${JSON.stringify(report, null, 2)}\n`);
-    assert.equal(report.phase, 'Phase4');
-    assert.equal(report.scope, 'single-shot');
-    assert.equal(report.entries.length, 8);
-    assert.deepEqual(
-      report.implementation.sourceSha256,
-      Object.fromEntries(Object.entries(before).map(([path, { sha256 }]) => [path, sha256])),
-    );
-    assert.deepEqual(report.references.phase3.provenance.references, references.phase3.references);
-    assert.match(control.writes[1].content, /^# Phase-4 Release Single-Shot Benchmark Comparison/);
-    assert.match(control.logs.join('\n'), /wall ms \(compile \+ solve\)/);
-    assert.doesNotMatch(
-      json,
-      /"(?:wallMs|timestamp|generatedAt|models?|elapsedMs|ino|mtimeNs|ctimeNs)"\s*:/,
-    );
-  });
-
-  it('produces deterministic JSON/Markdown bytes through the actual runner', async () => {
-    const first = runnerControl();
-    const second = runnerControl();
-    await runBenchmark(first.options);
-    await runBenchmark(second.options);
-    assert.equal(first.writes.length, 2);
-    assert.equal(second.writes.length, 2);
-    assert.deepEqual(first.writes, second.writes);
-  });
-
-  it('fails before writing for missing or modified references in every phase', async () => {
-    for (const reference of historicalReferences) {
-      for (const missing of [true, false]) {
-        const control = runnerControl();
-        const unavailable = new Error('missing pinned reference');
-        control.options.readGit = (args) => {
-          if (args[0] === 'show' && args[1] === `${reference.commit}:${reference.path}`) {
-            if (missing) {
-              throw unavailable;
-            }
-            return Buffer.from('{}');
-          }
-          return readGit(args);
-        };
-        await assert.rejects(
-          runBenchmark(control.options),
-          missing ? (error: unknown) => error === unavailable : /reference blob mismatch/,
-        );
-        assert.equal(control.writes.length, 0);
-        assert.equal(control.solvers.length, 0);
+describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed PHP searches)', () => {
+  for (const mode of modes) {
+    it(`verifies the unchanged tree in ${mode} mode with real model validation and zero writes`, async () => {
+      const control = runnerControl();
+      await runBenchmark({ ...control.options, mode });
+      assert.equal(control.compiled.length, 8);
+      assert.equal(new Set(control.compiled).size, 8);
+      assert.equal(new Set(control.solvers).size, 8);
+      assert.deepEqual(
+        control.models.map(({ index }) => index),
+        [0, 3, 4, 5],
+      );
+      for (const { index, model } of control.models) {
+        assert.equal(expressionValue(control.instances[index].expr, model), Value.TRUE);
       }
+      for (const [index, options] of control.solverOptions.entries()) {
+        const fixture = control.instances[index].fixture;
+        assert.deepEqual(options, {
+          assumptions: fixture.assumptions,
+          enablePle: true,
+          maxConflicts: fixture.maxConflicts,
+        });
+        assert.notEqual(options?.assumptions, fixture.assumptions);
+      }
+      assert.deepEqual(control.events.slice(0, 4), [
+        'snapshot',
+        'load solver',
+        'snapshot',
+        'fixtures',
+      ]);
+      assert.deepEqual(control.events.slice(-1), ['snapshot']);
+      assert.equal(control.snapshots.length, 3);
+      const before = control.snapshots[0];
+      for (const path of [
+        'src/compile.ts',
+        'src/expr.ts',
+        'src/index.ts',
+        'src/solver.ts',
+        'test/bench.ts',
+        'test/bench-comparison.ts',
+        'test/helpers.ts',
+        'test/php-regressions.ts',
+        'package.json',
+        'package-lock.json',
+        'tsconfig.json',
+      ]) {
+        const url = new URL(`../${path}`, import.meta.url);
+        const { ino, mtimeNs, ctimeNs } = statSync(url, { bigint: true });
+        assert.deepEqual(before[path], {
+          sha256: sha256(readFileSync(url)),
+          ino,
+          mtimeNs,
+          ctimeNs,
+        });
+      }
+      const logs = control.logs.join('\n');
+      assert.match(logs, new RegExp(`verifier \\(${mode} mode; assert-only, writes nothing\\)`));
+      assert.match(logs, /wall ms \(compile \+ solve\)/);
+      assert.match(logs, /Nothing was written/);
+      if (mode === 'parity') {
+        assert.match(logs, /all 48 counters exactly match the frozen Phase-4 record/);
+      } else {
+        assert.match(logs, /Gates verified/);
+        assert.match(logs, /All 48 counters match the frozen Phase-4 record/);
+      }
+    });
+  }
+
+  it('leaves every frozen Phase-4 artifact byte-identical, including file versions, in both modes', async () => {
+    const artifactUrls = [
+      'test/phase4-benchmark.json',
+      'test/phase4-benchmark.md',
+      'test/phase4-release-manifest.json',
+    ].map((path) => new URL(`../${path}`, import.meta.url));
+    const fingerprint = (url: URL) => {
+      const { ino, mtimeNs, ctimeNs } = statSync(url, { bigint: true });
+      return { sha256: sha256(readFileSync(url)), ino, mtimeNs, ctimeNs };
+    };
+    const before = artifactUrls.map(fingerprint);
+    for (const mode of modes) {
+      const control = runnerControl();
+      await runBenchmark({ ...control.options, mode });
+    }
+    assert.deepEqual(
+      artifactUrls.map(fingerprint),
+      before,
+      'verify mode must not rewrite, touch, or replace the frozen Phase-4 artifacts',
+    );
+  });
+
+  it('is deterministic through the actual verifier in both modes', async () => {
+    const normalized = (control: ReturnType<typeof runnerControl>) =>
+      control.logs.join('\n').replace(/\d+\.\d+/g, '<wall ms>');
+    for (const mode of modes) {
+      const first = runnerControl();
+      await runBenchmark({ ...first.options, mode });
+      const second = runnerControl();
+      await runBenchmark({ ...second.options, mode });
+      assert.equal(normalized(first), normalized(second));
     }
   });
 
-  it('fails before writing for missing or modified historical implementation/config sources', async () => {
-    for (const reference of [PHASE2_REFERENCE, PHASE3_REFERENCE]) {
-      for (const path of ['src/solver.ts', 'test/bench-comparison.ts']) {
+  it('fails closed for missing or modified references in every phase, in both modes', async () => {
+    for (const reference of allReferences) {
+      for (const mode of modes) {
         for (const missing of [true, false]) {
           const control = runnerControl();
-          const unavailable = new Error('missing historical source');
+          const unavailable = new Error('missing pinned reference');
           control.options.readGit = (args) => {
-            if (args[1] === `${reference.commit}:${path}`) {
+            if (args[0] === 'show' && args[1] === `${reference.commit}:${reference.path}`) {
               if (missing) {
                 throw unavailable;
               }
-              return Buffer.from('modified historical source');
+              return Buffer.from('{}');
             }
             return readGit(args);
           };
           await assert.rejects(
-            runBenchmark(control.options),
-            missing ? (error: unknown) => error === unavailable : /source provenance mismatch/,
+            runBenchmark({ ...control.options, mode }),
+            missing ? (error: unknown) => error === unavailable : /reference blob mismatch/,
           );
-          assert.equal(control.writes.length, 0);
           assert.equal(control.solvers.length, 0);
         }
       }
     }
   });
 
-  it('rejects fixture metadata, coverage, caps, and actual AST changes before compiling', async () => {
-    const changes: Array<(instances: ReturnType<typeof benchmarkFixtures>) => void> = [
-      (instances) => {
-        instances[0].fixture.fixture = 'different generator';
-      },
-      (instances) => {
-        instances[0].fixture.fixtureSha256 = '0'.repeat(64);
-      },
-      (instances) => {
-        instances[0].fixture.assumptions.h = Value.FALSE;
-      },
-      (instances) => {
-        instances[0].expr = or();
-      },
-      (instances) => {
-        instances.pop();
-      },
-      (instances) => {
-        instances[7] = instances[6];
-      },
-      (instances) => {
-        instances[6].fixture.maxConflicts += 1;
-      },
-      (instances) => {
-        instances[7].fixture.maxConflicts += 1;
-      },
-      (instances) => {
-        instances[6].fixture.calibratedConflicts = 724;
-      },
-      ...[0, -1, 200_001, Number.NaN, Number.POSITIVE_INFINITY, 0.5, true, '200000'].map(
-        (maxConflicts) => (instances: ReturnType<typeof benchmarkFixtures>) => {
-          instances[0].fixture.maxConflicts = maxConflicts as number;
-        },
-      ),
-    ];
-    for (const change of changes) {
-      const control = runnerControl();
-      change(control.instances);
-      await assert.rejects(
-        runBenchmark(control.options),
-        /fixture (?:coverage )?disagreement|fixture changed during the run/,
-      );
-      assert.equal(control.writes.length, 0);
-      assert.equal(control.compiled.length, 0);
+  it('fails closed for missing or modified historical implementation sources at every artifact commit, in both modes', async () => {
+    for (const [reference, paths] of [
+      [PHASE2_REFERENCE, ['src/solver.ts', 'test/bench-comparison.ts']],
+      [PHASE3_REFERENCE, ['src/solver.ts', 'test/bench-comparison.ts']],
+      // Embedded Phase-4 fingerprints are checked against release-commit bytes,
+      // independently of today's edited verifier sources.
+      [PHASE4_REFERENCE, ['src/solver.ts', 'test/bench.ts']],
+    ] as const) {
+      for (const mode of modes) {
+        for (const path of paths) {
+          for (const missing of [true, false]) {
+            const control = runnerControl();
+            const unavailable = new Error('missing historical source');
+            control.options.readGit = (args) => {
+              if (args[1] === `${reference.commit}:${path}`) {
+                if (missing) {
+                  throw unavailable;
+                }
+                return Buffer.from('modified historical source');
+              }
+              return readGit(args);
+            };
+            await assert.rejects(
+              runBenchmark({ ...control.options, mode }),
+              missing ? (error: unknown) => error === unavailable : /source provenance mismatch/,
+            );
+            assert.equal(control.solvers.length, 0);
+          }
+        }
+      }
     }
   });
 
-  it('rechecks AST/assumption hashes and metadata after all solves, before writing', async () => {
+  for (const mode of modes) {
+    it(`rejects fixture metadata, coverage, caps, and actual AST changes before compiling (${mode} mode)`, async () => {
+      const changes: Array<(instances: ReturnType<typeof benchmarkFixtures>) => void> = [
+        (instances) => {
+          instances[0].fixture.fixture = 'different generator';
+        },
+        (instances) => {
+          instances[0].fixture.fixtureSha256 = '0'.repeat(64);
+        },
+        (instances) => {
+          instances[0].fixture.assumptions.h = Value.FALSE;
+        },
+        (instances) => {
+          instances[0].expr = or();
+        },
+        (instances) => {
+          instances.pop();
+        },
+        (instances) => {
+          instances[7] = instances[6];
+        },
+        (instances) => {
+          instances[6].fixture.maxConflicts += 1;
+        },
+        (instances) => {
+          instances[7].fixture.maxConflicts += 1;
+        },
+        (instances) => {
+          instances[6].fixture.calibratedConflicts = 724;
+        },
+        ...[0, -1, 200_001, Number.NaN, Number.POSITIVE_INFINITY, 0.5, true, '200000'].map(
+          (maxConflicts) => (instances: ReturnType<typeof benchmarkFixtures>) => {
+            instances[0].fixture.maxConflicts = maxConflicts as number;
+          },
+        ),
+      ];
+      for (const change of changes) {
+        const control = runnerControl();
+        change(control.instances);
+        await assert.rejects(
+          runBenchmark({ ...control.options, mode }),
+          /fixture (?:coverage )?disagreement|fixture changed during the run/,
+        );
+        assert.equal(control.compiled.length, 0);
+      }
+    });
+  }
+
+  it('rechecks AST/assumption hashes and metadata after all solves, before verification completes', async () => {
     const changes: Array<(instances: ReturnType<typeof benchmarkFixtures>) => void> = [
       (instances) => {
         instances[0].expr = or();
@@ -1230,7 +1456,6 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
         /fixture disagreement|fixture changed during the run/,
       );
       assert.equal(control.solvers.length, 8);
-      assert.equal(control.writes.length, 0);
     }
   });
 
@@ -1283,7 +1508,7 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
     ['null SAT model', () => null, /solver verdict\/model disagreement/],
   ];
   for (const [label, change, message] of badModels) {
-    it(`rejects ${label} in the runner, not just the renderer`, async () => {
+    it(`rejects ${label} in the verifier, not just the renderer`, async () => {
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
@@ -1292,7 +1517,6 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
         }
       };
       await assert.rejects(runBenchmark(control.options), message);
-      assert.equal(control.writes.length, 0);
     });
   }
 
@@ -1319,10 +1543,9 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
     assert.equal(expressionValue(control.instances[0].expr, control.models[0].model), Value.TRUE);
     assert.equal(control.instances[0].fixture.assumptions.h, Value.TRUE);
     assert.equal(control.models[0].model.h, Value.FALSE);
-    assert.equal(control.writes.length, 0);
   });
 
-  it('rejects missing, inherited, or invalid counters before writing', async () => {
+  it('rejects missing, inherited, or invalid counters before verification completes', async () => {
     const changes: Array<(stats: SolverStats) => void> = [
       ...COUNTERS.map((counter) => (stats: SolverStats) => {
         delete (stats as Partial<SolverStats>)[counter];
@@ -1348,7 +1571,6 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
         }
       };
       await assert.rejects(runBenchmark(control.options), /missing or invalid/);
-      assert.equal(control.writes.length, 0);
     }
   });
 
@@ -1372,52 +1594,83 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
           ? (error: unknown) => error === exhausted
           : /maximum conflict budget exhausted \(200000\)/,
       );
-      assert.equal(control.writes.length, 0);
     }
   });
 
-  it('rejects invalid or changed solver verdicts before writing', async () => {
-    for (const verdict of [false, 0, 1, 'SAT', null, undefined]) {
-      const control = runnerControl();
-      const Base = control.runtime.Solver;
-      control.runtime.Solver = class extends Base {
-        override solve(): boolean {
-          super.solve();
-          return verdict as boolean;
-        }
-      };
-      await assert.rejects(
-        runBenchmark(control.options),
-        /verdict disagreement|invalid solver verdict/,
-      );
-      assert.equal(control.writes.length, 0);
-    }
-  });
+  for (const mode of modes) {
+    it(`rejects invalid or changed solver verdicts (${mode} mode)`, async () => {
+      for (const verdict of [false, 0, 1, 'SAT', null, undefined]) {
+        const control = runnerControl();
+        const Base = control.runtime.Solver;
+        control.runtime.Solver = class extends Base {
+          override solve(): boolean {
+            super.solve();
+            return verdict as boolean;
+          }
+        };
+        await assert.rejects(
+          runBenchmark({ ...control.options, mode }),
+          /verdict disagreement|invalid solver verdict/,
+        );
+      }
+    });
+  }
 
-  it('enforces the hypergraph and PHP learning controls in the runner', async () => {
-    for (const invalidHypergraph of [true, false]) {
+  for (const mode of modes) {
+    it(`enforces the hypergraph and PHP learning controls (${mode} mode)`, async () => {
+      for (const invalidHypergraph of [true, false]) {
+        const control = runnerControl();
+        const Base = control.runtime.Solver;
+        control.runtime.Solver = class extends Base {
+          override solve(): boolean {
+            const sat = super.solve();
+            if (invalidHypergraph) {
+              this.stats.decisions += 1;
+            } else if (control.solvers.length === 2) {
+              this.stats.learnedClauses = 0;
+            }
+            return sat;
+          }
+        };
+        await assert.rejects(
+          runBenchmark({ ...control.options, mode }),
+          invalidHypergraph ? /hypergraph must retain exactly/ : /learning must be engaged/,
+        );
+      }
+    });
+  }
+
+  it('fails parity mode on a changed candidate counter but only reports it in gates mode', async () => {
+    const makeControl = () => {
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
         override solve(): boolean {
           const sat = super.solve();
-          if (invalidHypergraph) {
-            this.stats.decisions += 1;
-          } else if (control.solvers.length === 2) {
-            this.stats.learnedClauses = 0;
+          // php_5_4 (instance 1): no verdict/oracle/cap check pins restarts, so
+          // parity alone must catch the drift and gates mode must only report it.
+          if (control.solvers.length === 2) {
+            this.stats.restarts += 1;
           }
           return sat;
         }
       };
-      await assert.rejects(
-        runBenchmark(control.options),
-        invalidHypergraph ? /hypergraph must retain exactly/ : /learning must be engaged/,
-      );
-      assert.equal(control.writes.length, 0);
-    }
+      return control;
+    };
+    const parity = makeControl();
+    await assert.rejects(
+      runBenchmark({ ...parity.options, mode: 'parity' }),
+      /php_5_4: restarts broke Phase-4 parity \(current \d+, frozen \d+\)/,
+    );
+    const gates = makeControl();
+    await runBenchmark({ ...gates.options, mode: 'gates' });
+    const logs = gates.logs.join('\n');
+    assert.match(logs, /Counter deltas \(non-fatal in gates mode\)/);
+    assert.match(logs, /\| php_5_4 \| restarts \| \d+ \| \d+ \| \+1 \|/);
+    assert.match(logs, /Gates verified/);
   });
 
-  it('guards real snapshots after imports and before writes, including same-byte file versions', async () => {
+  it('guards real snapshots after imports and before verification completes, including same-byte file versions', async () => {
     const changes: Array<(snapshot: ReturnType<typeof sourceSnapshot>) => void> = [
       (snapshot) => {
         snapshot['src/solver.ts'] = {
@@ -1471,7 +1724,6 @@ describe('actual Phase-4 runner (in-memory writer, real SAT solves, stubbed PHP 
         );
         assert.equal(control.snapshots.length, boundary);
         assert.equal(control.solvers.length, boundary === 2 ? 0 : 8);
-        assert.equal(control.writes.length, 0);
       }
     }
   });

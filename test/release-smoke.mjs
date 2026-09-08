@@ -313,6 +313,23 @@ try {
   assert.equal(manifest.version, '2.0.0');
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.main, 'dist/index.js');
+  assert.equal(manifest.types, './dist/index.d.ts');
+  assert.deepEqual(manifest.exports, {
+    '.': {
+      types: './dist/index.d.ts',
+      import: './dist/index.js',
+    },
+  });
+  assert.equal(manifest.sideEffects, false);
+  assert.equal(typeof manifest.description, 'string');
+  assert.ok(manifest.description.length > 0, 'Package description must be nonempty');
+  assert.deepEqual(manifest.keywords, ['sat', 'satisfiability', 'boolean', 'solver', 'cdcl']);
+  assert.deepEqual(manifest.repository, {
+    type: 'git',
+    url: 'git+https://github.com/divmain/sat.git',
+  });
+  assert.equal(manifest.homepage, 'https://github.com/divmain/sat#readme');
+  assert.equal(manifest.bugs, 'https://github.com/divmain/sat/issues');
   assert.deepEqual(manifest.dependencies, {});
   assert.deepEqual(manifest.files, ['dist']);
   assert.equal(Object.hasOwn(manifest, 'engines'), false);
@@ -343,7 +360,13 @@ try {
   const packageFiles = inventory(packageRoot);
   assert.deepEqual(
     packageFiles.filter((file) => file.startsWith(`dist${sep}`)).sort(),
-    modules.flatMap((name) => [`dist/${name}.d.ts`, `dist/${name}.js`]).sort(),
+    modules
+      .flatMap((name) => [`dist/${name}.d.ts`, `dist/${name}.js`, `dist/${name}.js.map`])
+      .sort(),
+  );
+  assert.ok(
+    packageFiles.every((file) => !file.endsWith('.d.ts.map')),
+    'Declaration maps must not be shipped: their ../src references dangle under files: ["dist"]',
   );
   assert.ok(
     packageFiles.every(

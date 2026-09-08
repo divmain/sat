@@ -11,9 +11,10 @@
     "forceConsistentCasingInFileNames": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "strictNullChecks": true,
+    "strict": true,
     "exactOptionalPropertyTypes": true,
-    "inlineSourceMap": true,
+    "sourceMap": true,
+    "inlineSources": true,
     "skipLibCheck": true
   },
   "include": ["src"]

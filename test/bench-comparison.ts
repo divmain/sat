@@ -91,6 +91,30 @@ export const PHASE3_REFERENCE: ReferenceIdentity = {
   sha256: 'cefb8e62794156441b1154ee7be82a7642446e19bde40ba33d3005a1badd146d',
 };
 
+// The v2 release commit froze the Phase-4 evidence. Its recorded HEAD field
+// (53a059c…) is context only: source provenance is checked against these
+// release-commit bytes, never against the recorded HEAD or working files.
+export const PHASE4_REFERENCE: ReferenceIdentity = {
+  commit: 'ae1a4fe9459c525d1ae746c82eb8bdbd2a97b0b2',
+  path: 'test/phase4-benchmark.json',
+  gitBlob: '3f75b8d819a6b2e0fed45bed662b3bb575ca2868',
+  sha256: '4e0bf82088935537737a2e61e011875988a66b703b105c5f6c61c1b5b61ab795',
+};
+
+export const PHASE4_MARKDOWN_REFERENCE: ReferenceIdentity = {
+  commit: 'ae1a4fe9459c525d1ae746c82eb8bdbd2a97b0b2',
+  path: 'test/phase4-benchmark.md',
+  gitBlob: '669dee20a621d3575a3efe0518739cbc5b54d733',
+  sha256: '9c42e40e47158d0fb7f47a5a59cbe61b7d02d8ec06f862cf2b5fb3f15a15bc24',
+};
+
+export const PHASE4_MANIFEST_REFERENCE: ReferenceIdentity = {
+  commit: 'ae1a4fe9459c525d1ae746c82eb8bdbd2a97b0b2',
+  path: 'test/phase4-release-manifest.json',
+  gitBlob: '461cab4973b971fcf4543ac62ed5d02bce6a71d2',
+  sha256: '98d20f0ca246bbfedc2d069dd783ef52e5ea2022e51946796ab5ffbfe9e235bb',
+};
+
 export interface Implementation {
   head: string;
   sourceSha256: Record<string, string>;
@@ -141,26 +165,28 @@ export const sha256 = (content: string | Buffer): string =>
   createHash('sha256').update(content).digest('hex');
 
 // Git is the only reference reader. No fallback to HEAD, working files, or new measurements.
+function authenticateReference(
+  readGit: (args: string[]) => Buffer,
+  reference: ReferenceIdentity,
+  phase: string,
+): string {
+  assert.equal(
+    readGit(['rev-parse', '--verify', `${reference.commit}^{commit}`])
+      .toString('utf8')
+      .trim(),
+    reference.commit,
+    `${phase} reference commit mismatch`,
+  );
+  const content = readGit(['show', `${reference.commit}:${reference.path}`]);
+  const blob = createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex');
+  assert.equal(blob, reference.gitBlob, `${phase} reference blob mismatch`);
+  assert.equal(sha256(content), reference.sha256, `${phase} reference SHA-256 mismatch`);
+  return content.toString('utf8');
+}
+
 export function loadReferences(readGit: (args: string[]) => Buffer): BenchmarkReferences {
-  const contents = [PHASE1_REFERENCE, PHASE2_REFERENCE, PHASE3_REFERENCE].map(
-    (reference, index) => {
-      const phase = `Phase-${index + 1}`;
-      assert.equal(
-        readGit(['rev-parse', '--verify', `${reference.commit}^{commit}`])
-          .toString('utf8')
-          .trim(),
-        reference.commit,
-        `${phase} reference commit mismatch`,
-      );
-      const content = readGit(['show', `${reference.commit}:${reference.path}`]);
-      const blob = createHash('sha1')
-        .update(`blob ${content.length}\0`)
-        .update(content)
-        .digest('hex');
-      assert.equal(blob, reference.gitBlob, `${phase} reference blob mismatch`);
-      assert.equal(sha256(content), reference.sha256, `${phase} reference SHA-256 mismatch`);
-      return content.toString('utf8');
-    },
+  const contents = [PHASE1_REFERENCE, PHASE2_REFERENCE, PHASE3_REFERENCE].map((reference, index) =>
+    authenticateReference(readGit, reference, `Phase-${index + 1}`),
   );
   // The authenticated bytes fix these historical schemas, including absent counters.
   const phase1 = JSON.parse(contents[0]) as BenchmarkReferences['phase1'];
@@ -214,6 +240,142 @@ export function assertReferenceChain({ phase1, phase2, phase3 }: BenchmarkRefere
     phase2.entries,
     'Phase-3 evidence chain disagreement with Phase 2',
   );
+}
+
+export interface Phase4Entry extends BenchmarkResult {
+  phase1: Partial<SolverStats> | null;
+  phase2: Partial<SolverStats>;
+  phase3: Partial<SolverStats>;
+}
+
+export interface Phase4Record {
+  phase: string;
+  scope: string;
+  references: BenchmarkReferences['phase3']['references'] & {
+    phase3: ReferenceIdentity & {
+      provenance: {
+        references: BenchmarkReferences['phase3']['references'];
+        implementation: Implementation;
+      };
+    };
+  };
+  implementation: Implementation;
+  notes: string[];
+  regressions: Array<{
+    instance: string;
+    reference: string;
+    counter: string;
+    before: number;
+    after: number;
+    delta: number;
+  }>;
+  entries: Phase4Entry[];
+}
+
+export interface Phase4ReleaseManifest {
+  benchmark: {
+    artifacts: Array<{ path: string; gitBlob: string; sha256: string }>;
+  };
+}
+
+// The manifest from the same release commit must identify exactly the pinned
+// Phase-4 artifact bytes the verifier authenticates independently.
+export function assertPhase4Manifest(manifest: Phase4ReleaseManifest): void {
+  const artifacts = new Map(
+    manifest.benchmark.artifacts.map((artifact) => [artifact.path, artifact]),
+  );
+  for (const reference of [PHASE4_REFERENCE, PHASE4_MARKDOWN_REFERENCE]) {
+    const artifact = artifacts.get(reference.path);
+    assert.ok(artifact, `Phase-4 manifest is missing the ${reference.path} artifact record`);
+    assert.equal(
+      artifact.gitBlob,
+      reference.gitBlob,
+      `Phase-4 manifest disagrees with the pinned ${reference.path} Git blob`,
+    );
+    assert.equal(
+      artifact.sha256,
+      reference.sha256,
+      `Phase-4 manifest disagrees with the pinned ${reference.path} SHA-256`,
+    );
+  }
+}
+
+// Decoded agreement between the frozen Phase-4 record and the independently
+// authenticated Phase-1/2/3 references, separate from byte authentication.
+// The record's own phase4 counters are the parity reference and are only
+// validated for shape here.
+export function assertPhase4Record(record: Phase4Record, references: BenchmarkReferences): void {
+  assert.equal(record.phase, 'Phase4', 'Phase-4 record phase disagreement');
+  assert.equal(record.scope, 'single-shot', 'Phase-4 record scope disagreement');
+  assert.deepEqual(
+    record.references,
+    {
+      ...references.phase3.references,
+      phase3: {
+        ...PHASE3_REFERENCE,
+        provenance: {
+          references: references.phase3.references,
+          implementation: references.phase3.implementation,
+        },
+      },
+    },
+    'Phase-4 record provenance disagreement with authenticated Phases 1-3',
+  );
+  assert.equal(
+    record.entries.length,
+    references.phase3.entries.length,
+    'Phase-4 record coverage disagreement',
+  );
+  for (const entry of record.entries) {
+    const previous = references.phase3.entries.find(({ name }) => name === entry.name);
+    assert.ok(previous, `Phase-4 record instance missing from Phase-3 evidence: ${entry.name}`);
+    for (const counter of COUNTERS) {
+      const value = entry.phase4[counter];
+      assert.ok(
+        Number.isSafeInteger(value) && value >= 0,
+        `Phase-4 record counter must be a non-negative integer: ${entry.name}.${counter}`,
+      );
+    }
+    const { phase4: _counters, ...historical } = entry;
+    assert.deepEqual(
+      historical,
+      previous,
+      `Phase-4 record disagrees with authenticated Phase-3 evidence: ${entry.name}`,
+    );
+  }
+}
+
+// Every embedded Phase-4 source fingerprint is checked against the release
+// commit's bytes, independently of today's edited working sources; the
+// record's HEAD field is context only and never used for provenance.
+export function assertPhase4Sources(
+  record: Phase4Record,
+  readGit: (args: string[]) => Buffer,
+): void {
+  for (const [path, hash] of Object.entries(record.implementation.sourceSha256)) {
+    assert.equal(
+      sha256(readGit(['show', `${PHASE4_REFERENCE.commit}:${path}`])),
+      hash,
+      `Phase-4 source provenance mismatch: ${path}`,
+    );
+  }
+}
+
+export function loadPhase4Record(
+  readGit: (args: string[]) => Buffer,
+  references: BenchmarkReferences,
+): Phase4Record {
+  const record = JSON.parse(
+    authenticateReference(readGit, PHASE4_REFERENCE, 'Phase-4'),
+  ) as Phase4Record;
+  const manifest = JSON.parse(
+    authenticateReference(readGit, PHASE4_MANIFEST_REFERENCE, 'Phase-4 manifest'),
+  ) as Phase4ReleaseManifest;
+  authenticateReference(readGit, PHASE4_MARKDOWN_REFERENCE, 'Phase-4 markdown');
+  assertPhase4Manifest(manifest);
+  assertPhase4Record(record, references);
+  assertPhase4Sources(record, readGit);
+  return record;
 }
 
 export function assertSourcesUnchanged(
