@@ -33,7 +33,7 @@
     "bench:legacy": "tsx ./test/bench.ts",
     "build": "tsc",
     "check": "biome check ./src ./test",
-    "typecheck": "tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/*.ts test/*.ts",
+    "typecheck": "tsc --noEmit --module ESNext --moduleResolution Bundler --target es2022 --lib es2022 --strict --exactOptionalPropertyTypes --noUnusedLocals --noUnusedParameters --skipLibCheck src/*.ts test/*.ts",
     "fix": "biome check --apply ./src ./test",
     "test": "globstar -- tsx --import ./test/debug.ts --test --experimental-test-coverage --test-reporter spec './test/**/*.spec.ts'",
     "test-watch": "globstar -- tsx --import ./test/debug.ts --test --experimental-test-coverage --watch --test-reporter spec './test/**/*.spec.ts'",

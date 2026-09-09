@@ -230,6 +230,19 @@ interface GlobalWithScheduler {
   scheduler?: { yield?: (() => Promise<void>) | undefined } | undefined;
 }
 
+// The async option types name the WHATWG `AbortSignal` global, but the
+// library reads only `aborted` from it. Declaring that minimal slice here
+// keeps every compilation self-sufficient — no DOM lib or platform typings
+// required — while interface merging composes it with the full DOM/Node
+// declarations whenever a program provides them (both declare the identical
+// `readonly aborted: boolean`, so the merge cannot conflict). This module
+// ships, so the declaration reaches consumers through dist/solver.d.ts.
+declare global {
+  interface AbortSignal {
+    readonly aborted: boolean;
+  }
+}
+
 // Read through a function so TypeScript's property narrowing cannot freeze a
 // stale non-aborted value after an early return — the whole point of an
 // AbortSignal is that `aborted` flips asynchronously between checkpoints.

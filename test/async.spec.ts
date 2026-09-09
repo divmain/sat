@@ -588,7 +588,10 @@ describe('real scheduler fallback selection and lifecycle', () => {
         const record = { port1Closed: false, port2Closed: false };
         created.push(record);
         const wrap = (
-          port: MessagePort,
+          // Structural, not the DOM/Node MessagePort type: the strict
+          // typecheck pins `lib` to es2022, where no global MessagePort
+          // interface exists, and either flavor satisfies this shape.
+          port: { close(): void; postMessage(message: unknown): void },
           markClosed: () => void,
         ): { onmessage: (() => void) | null; close(): void; postMessage(m: unknown): void } => {
           let handler: (() => void) | null = null;

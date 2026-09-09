@@ -17,6 +17,14 @@ import { fileURLToPath } from 'node:url';
 // import under src/ is a violation.
 const ALLOWED_PLATFORM_ACCESS = "globalThis.process?.env?.SAT_DEBUG === '1'";
 
+// DOM-only globals must never appear in src/, even in comments (the same
+// discipline the `process` word already follows): both type gates pin `lib`
+// to es2022, so a real reference would not typecheck — but a careless comment
+// could still hide one from review. `self` is deliberately absent: it occurs
+// in ordinary words like "self-contained".
+const DOM_GLOBAL =
+  /\b(window|document|localStorage|sessionStorage|navigator|indexedDB|XMLHttpRequest|alert|confirm|prompt)\b/;
+
 type DebugAuditGlobal = typeof globalThis & { __SAT_DEBUG_AUDITS__?: boolean };
 
 function listSourceFiles(directory: string): string[] {
@@ -58,14 +66,49 @@ describe('Platform neutrality and preload load-proof', () => {
         if (/["']node:/.test(line)) {
           violations.push(`${relative(srcDirectory, file)}:${index + 1}: node: import`);
         }
+        const domMatch = DOM_GLOBAL.exec(line);
+        if (domMatch !== null) {
+          violations.push(
+            `${relative(srcDirectory, file)}:${index + 1}: DOM global "${domMatch[1]}"`,
+          );
+        }
       }
     }
     assert.deepStrictEqual(
       violations,
       [],
-      `src/ must stay platform-neutral: no process reference except the guarded globalThis access, and no node: import.\n${violations.join(
+      `src/ must stay platform-neutral: no process reference except the guarded globalThis access, no node: import, and no DOM global.\n${violations.join(
         '\n',
       )}`,
+    );
+  });
+
+  it('both type gates pin lib to es2022, so DOM globals never typecheck', () => {
+    // The regression vector behind the no-DOM rule: `lib: [..., "dom"]` lets
+    // window/document/localStorage typecheck in src/. AbortSignal typing does
+    // NOT come from the DOM lib — src/solver.ts declares the minimal
+    // `readonly aborted` slice via `declare global`, which merges with the
+    // full DOM/Node declarations wherever a program provides them.
+    const rootDirectory = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const tsconfig = JSON.parse(readFileSync(join(rootDirectory, 'tsconfig.json'), 'utf8')) as {
+      compilerOptions?: { lib?: unknown };
+    };
+    const lib = tsconfig.compilerOptions?.lib;
+    assert.ok(Array.isArray(lib), 'tsconfig.json must pin compilerOptions.lib explicitly');
+    assert.deepStrictEqual(
+      lib.filter((entry) => /^(dom|webworker)/i.test(String(entry))),
+      [],
+      'tsconfig.json lib must not include DOM/WebWorker typings; src/ is platform-neutral',
+    );
+    // Without an explicit --lib, tsc defaults to the target's full lib set,
+    // which includes DOM — the strict typecheck would silently regain it.
+    const manifest = JSON.parse(readFileSync(join(rootDirectory, 'package.json'), 'utf8')) as {
+      scripts?: { typecheck?: unknown };
+    };
+    const typecheck = manifest.scripts?.typecheck;
+    assert.ok(
+      typeof typecheck === 'string' && typecheck.includes('--lib es2022'),
+      'the typecheck script must pin --lib es2022; unpinned, tsc defaults to a lib set including DOM',
     );
   });
 });
