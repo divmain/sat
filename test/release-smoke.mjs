@@ -337,6 +337,7 @@ try {
     },
   });
   assert.equal(manifest.sideEffects, false);
+  assert.equal(manifest.license, 'MIT');
   assert.equal(typeof manifest.description, 'string');
   assert.ok(manifest.description.length > 0, 'Package description must be nonempty');
   assert.deepEqual(manifest.keywords, ['sat', 'satisfiability', 'boolean', 'solver', 'cdcl']);
@@ -391,6 +392,11 @@ try {
         /^(package\.json|README\.md|LICEN[SC]E(?:\.\w+)?)$/i.test(file),
     ),
     'Unexpected files outside dist/package metadata',
+  );
+  assert.deepEqual(
+    packageFiles.filter((file) => /^LICEN[SC]E(?:\.\w+)?$/i.test(file)),
+    ['LICENSE'],
+    'Tarball must ship exactly one root LICENSE matching the declared MIT license',
   );
   evidence.package = {
     root: packageRoot,
