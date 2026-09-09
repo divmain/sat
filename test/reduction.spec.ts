@@ -6,7 +6,7 @@ import { and, implies, not, or, Value } from '../src/expr.js';
 import type { BooleanExpr } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
 import type { SolverStats, VariablePriority } from '../src/solver.js';
-import { assertModelShape, cnfToExpr, expressionValue, phpCnf } from './helpers';
+import { assertModelShape, cnfToExpr, expressionValue, phpCnf, watchesClause } from './helpers';
 
 interface Internals {
   readonly learnedClauseReductionThreshold: number;
@@ -15,6 +15,7 @@ interface Internals {
   readonly heapPosition: Int32Array;
   readonly unassignedNamed: number;
   readonly varInc: number;
+  readonly claInc: number;
   readonly clauseByKey: Map<string, Clause>;
 }
 
@@ -174,7 +175,11 @@ class AuditedSolver extends Solver {
     assertGraph(this, conflict);
     const result = super.analyze(conflict);
     const levels = result.learned.lits.map((lit) => this.level[varOf(lit)]);
-    assert.strictEqual(result.learned.lbd, new Set(levels).size, 'learning-time distinct levels');
+    assert.strictEqual(
+      result.learned.lbd,
+      new Set(levels.filter((level) => level !== 0)).size,
+      'learning-time distinct nonzero levels',
+    );
     this.learnedLevels.push({ lits: [...result.learned.lits], levels, lbd: result.learned.lbd });
     return result;
   }
@@ -194,6 +199,7 @@ class AuditedSolver extends Solver {
     const reasons = [...this.reason];
     const state = searchState(this);
     const stats = { ...this.stats };
+    const claIncBefore = internals(this).claInc;
     const liveBefore = before.filter((clause) => clause.learned).length;
     assert.strictEqual(stats.learnedClausesCurrent - this.initialCurrent, liveBefore);
 
@@ -201,12 +207,38 @@ class AuditedSolver extends Solver {
     // Mandatory after EVERY forced round, including protected-only rounds.
     this.checkInvariants();
     assertGraph(this);
+    assert.strictEqual(
+      internals(this).claInc,
+      claIncBefore * (1 / 0.999),
+      'relative clause-activity decay fires after EVERY round',
+    );
     const retained = new Set(this.clauses);
     const removed = before.filter((clause) => !retained.has(clause));
-    assert.ok(removed.length <= Math.floor(liveBefore / 2), 'at most the worse half');
+    // Exact two-tier selection: the deleted set is precisely the unlocked
+    // worse half of the REDUCIBLE tier (stable activity order over admission
+    // order). Glue-tier clauses are never candidates, so they can neither be
+    // deleted nor consume a deletion slot.
+    const reducible = before.filter((clause) => clause.learned && clause.lbd > 2);
+    const ranked = reducible
+      .map((clause, admission) => ({ clause, admission }))
+      .sort(
+        (left, right) =>
+          left.clause.activity - right.clause.activity || left.admission - right.admission,
+      );
+    const expectedRemoved = new Set(
+      ranked
+        .slice(0, Math.floor(ranked.length / 2))
+        .map(({ clause }) => clause)
+        .filter((clause) => !reasons.includes(clause)),
+    );
+    assert.deepStrictEqual(
+      new Set(removed),
+      expectedRemoved,
+      'exactly the unlocked worse half of the reducible tier',
+    );
     for (const clause of removed) {
       assert.strictEqual(clause.learned, true, 'permanent clauses are never reduced');
-      assert.ok(clause.lbd > 2, 'low-LBD clauses are always protected');
+      assert.ok(clause.lbd > 2, 'glue-tier clauses are never deletion candidates');
       assert.ok(!reasons.includes(clause), 'EVERY active reason is protected');
     }
     assert.strictEqual(this.clauses, database, 'the database array itself stays stable');
@@ -283,7 +315,7 @@ describe('Solver learning-time LBD', () => {
     solver.checkInvariants();
   });
 
-  it('includes root antecedents once, retaining their unconditional entailment', () => {
+  it('retains tainted root antecedents without inflating LBD, preserving unconditional entailment', () => {
     const base = compile(gadgets(1));
     const solver = new AuditedSolver(base, { assumptions: { a: Value.TRUE, b: Value.TRUE } });
     decide(solver, literal(base, 'x0'));
@@ -294,14 +326,16 @@ describe('Solver learning-time LBD', () => {
       learned.lits.map((lit) => solver.level[varOf(lit)]),
       [1, 0, 0],
     );
-    assert.strictEqual(learned.lbd, 2, 'level zero contributes one distinct level');
+    // The assumption-tainted root literals stay (they are not base
+    // consequences), but level zero contributes NOTHING to the score.
+    assert.strictEqual(learned.lbd, 1, 'only the distinct nonzero levels count');
     assertEntailed(base, learned);
     solver.addLearnedClause(learned);
     solver.cancelUntil(backjumpLevel);
     assert.strictEqual(backjumpLevel, 0);
     assert.strictEqual(solver.enqueue(learned.lits[0], learned), true);
     assert.ok(learned.lits.every((lit) => solver.level[varOf(lit)] === 0));
-    assert.strictEqual(learned.lbd, 2);
+    assert.strictEqual(learned.lbd, 1);
     solver.reduceLearnedClauses();
   });
 
@@ -323,7 +357,7 @@ describe('Solver learning-time LBD', () => {
     solver.reduceLearnedClauses();
     assert.strictEqual(solver.reason[varOf(learned.lits[0])], learned);
     assert.ok(
-      solver.watches.every((list) => !list.includes(learned)),
+      solver.watches.every((list) => !watchesClause(list, learned)),
       'units remain unwatched',
     );
   });
@@ -363,19 +397,78 @@ describe('Solver learning-time LBD', () => {
       solver.clauses.filter((clause) => clause.learned).map((c) => c.lbd),
       [2, 3, 3],
     );
+    // The glue clause is NEVER a candidate, so it cannot consume a deletion
+    // slot: the reducible tier's worse half is one of the two LBD-3 clauses
+    // (admission order breaks the activity tie), and it is deleted.
+    const reducible = solver.clauses.filter((clause) => clause.learned && clause.lbd > 2);
     solver.reduceLearnedClauses();
     assert.deepStrictEqual(solver.reductions[0], {
       admissions: 3,
       conflict: 3,
       before: 3,
-      after: 3,
-      removed: [],
+      after: 2,
+      removed: [key(reducible[0])],
     });
-    assert.strictEqual(
-      solver.stats.learnedClausesCurrent,
-      3,
-      'protected is live, not zero eligible',
+    assert.ok(solver.clauses.includes(learned), 'the glue tier is untouchable');
+    assert.ok(solver.clauses.includes(reducible[1]));
+    assert.strictEqual(solver.stats.learnedClausesCurrent, 2);
+  });
+
+  it('never deletes the glue tier even when it holds the strictly worst activity', () => {
+    // Inverted-activity witness: give BOTH reducible clauses more real usage
+    // than the glue clause, so a ranking over ALL learned clauses would call
+    // the glue clause the worst. Tiering, not ranking, protects it — and
+    // exactly one reducible clause (the admission-older activity tie) goes.
+    const base = compile(
+      and(
+        implies('s', 'a'),
+        implies('s', 'b'),
+        implies('s', 'c'),
+        or(not('a'), not('x'), 't'),
+        or(not('b'), not('c'), not('x'), not('t')),
+        gadgets(2),
+      ),
     );
+    const solver = new AuditedSolver(base);
+    decide(solver, literal(base, 's'));
+    decide(solver, literal(base, 'x'));
+    const conflict = solver.propagate();
+    assert.ok(conflict !== null);
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    assert.strictEqual(learned.lbd, 2);
+    assertEntailed(base, learned);
+    solver.addLearnedClause(learned);
+    solver.cancelUntil(backjumpLevel);
+    assert.strictEqual(solver.enqueue(learned.lits[0], learned), true);
+    solver.cancelUntil(0);
+    const reducible = [0, 1].map((index) => learnGadget(solver, base, index));
+    // Real usage only: consume each reducible clause as a conflict seed via
+    // the analysis-local fixture (no fabricated activity, no propagation —
+    // the learned clause would otherwise unit-fire before it is falsified).
+    // The glue clause keeps the zero usage it had at creation.
+    for (const [index, clause] of reducible.entries()) {
+      for (const name of ['a', 'b', `x${index}`]) {
+        const lit = literal(base, name);
+        assert.strictEqual(litValue(lit, solver.assigns), Value.UNSET);
+        solver.newDecisionLevel();
+        assert.strictEqual(solver.enqueue(lit, null), true);
+      }
+      assertGraph(solver, clause);
+      solver.analyze(clause);
+      solver.cancelUntil(0);
+    }
+    assert.strictEqual(learned.activity, 0, 'the glue clause is the strict global minimum');
+    assert.ok(
+      reducible.every((clause) => clause.activity > learned.activity),
+      'a global ranking would call the glue clause the worst',
+    );
+    assert.ok(reducible.every((clause) => clause.lbd === 3 && !solver.reason.includes(clause)));
+    assert.ok(!solver.reason.includes(learned));
+    solver.reduceLearnedClauses();
+    assert.deepStrictEqual(solver.reductions[0].removed, [key(reducible[0])]);
+    assert.ok(solver.clauses.includes(learned), 'tier membership, not activity, protects');
+    assert.ok(solver.clauses.includes(reducible[1]));
+    assert.strictEqual(solver.stats.learnedClausesCurrent, 2);
   });
 });
 
@@ -422,7 +515,7 @@ describe('Solver learned reduction selection and identity', () => {
     );
     assert.strictEqual(solver.stats.learnedClauses, 5);
     assert.strictEqual(solver.stats.learnedClausesCurrent, 3);
-    assert.ok(solver.watches.every((list) => !list.includes(clauses[2])));
+    assert.ok(solver.watches.every((list) => !watchesClause(list, clauses[2])));
     for (const index of [0, 2]) {
       assert.ok(!internals(solver).clauseByKey.has(key(clauses[index])), 'no stale canonical key');
     }
@@ -600,6 +693,250 @@ describe('Solver learned reduction selection and identity', () => {
   });
 });
 
+describe('Solver decayed clause activity and dynamic LBD', () => {
+  // Consume a genuinely learned clause as a conflict seed: decide its gadget
+  // witnesses (WITHOUT propagation, which would unit-fire the clause first),
+  // then run the real analyze. This is operation-local usage, not a solve
+  // trace and not fabricated activity.
+  function consumeAsSeed(solver: Solver, base: CompiledCnf, clause: Clause, index: number): void {
+    for (const name of ['a', 'b', `x${index}`]) {
+      const lit = literal(base, name);
+      assert.strictEqual(litValue(lit, solver.assigns), Value.UNSET);
+      solver.newDecisionLevel();
+      assert.strictEqual(solver.enqueue(lit, null), true);
+    }
+    assertGraph(solver, clause);
+    solver.analyze(clause);
+    solver.cancelUntil(0);
+  }
+
+  it('decays older bumps: equal usage counts rank by bump recency after a round', () => {
+    const base = compile(gadgets(8));
+    const solver = new AuditedSolver(base);
+    const clauses = Array.from({ length: 8 }, (_, index) => learnGadget(solver, base, index));
+    // Pre-round usage: every clause once; clauses 6 and 7 a second time.
+    for (const [index, clause] of clauses.entries()) {
+      consumeAsSeed(solver, base, clause, index);
+    }
+    consumeAsSeed(solver, base, clauses[6], 6);
+    consumeAsSeed(solver, base, clauses[7], 7);
+    assert.deepStrictEqual(
+      clauses.map((clause) => clause.activity),
+      [1, 1, 1, 1, 1, 1, 2, 2],
+      'the increment is still exactly one before the first round',
+    );
+    assert.strictEqual(internals(solver).claInc, 1);
+    solver.reduceLearnedClauses();
+    // Ties at activity 1 resolve by admission: the oldest four are deleted.
+    assert.deepStrictEqual(
+      solver.reductions[0].removed,
+      [0, 1, 2, 3].map((index) => key(clauses[index])),
+    );
+    assert.strictEqual(internals(solver).claInc, 1 / 0.999, 'relative decay after the round');
+
+    // Post-round usage: clauses 4 and 5 each get ONE more bump — the same
+    // lifetime usage count as 6/7's two pre-round bumps, but each post-round
+    // bump carries the grown increment.
+    consumeAsSeed(solver, base, clauses[4], 4);
+    consumeAsSeed(solver, base, clauses[5], 5);
+    assert.strictEqual(clauses[4].activity, 1 + 1 / 0.999);
+    assert.strictEqual(clauses[5].activity, 1 + 1 / 0.999);
+    assert.strictEqual(clauses[6].activity, 2);
+    solver.reduceLearnedClauses();
+    assert.deepStrictEqual(
+      solver.reductions[1].removed,
+      [key(clauses[6]), key(clauses[7])],
+      'decay: two fresher bumps outweigh two older bumps',
+    );
+    assert.ok(solver.clauses.includes(clauses[4]));
+    assert.ok(solver.clauses.includes(clauses[5]));
+    solver.checkInvariants();
+  });
+
+  it('tightens LBD on analysis reuse by two or more levels, promoting the clause into the glue tier', () => {
+    // Learn (¬a∨¬b∨¬c∨¬x) at FOUR distinct nonzero levels (lbd 4): x@4 forces
+    // t@4, the second clause conflicts, and resolving t's reason folds in a@1.
+    const base = compile(
+      and(or(not('a'), not('x'), 't'), or(not('b'), not('c'), not('x'), not('t')), gadgets(3)),
+    );
+    const solver = new AuditedSolver(base);
+    const gadgets3 = [0, 1, 2].map((index) => learnGadget(solver, base, index));
+    for (const name of ['a', 'b', 'c', 'x']) {
+      decide(solver, literal(base, name));
+    }
+    const conflict = solver.propagate();
+    assert.ok(conflict !== null);
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    assert.deepStrictEqual(
+      [...learned.lits].sort(
+        (left, right) => solver.level[varOf(left)] - solver.level[varOf(right)],
+      ),
+      ['a', 'b', 'c', 'x'].map((name) => literal(base, name, Value.FALSE)),
+    );
+    assert.strictEqual(learned.lbd, 4);
+    assertEntailed(base, learned);
+    solver.addLearnedClause(learned);
+    solver.cancelUntil(backjumpLevel);
+    assert.strictEqual(solver.enqueue(learned.lits[0], learned), true);
+    solver.cancelUntil(0);
+
+    // Reuse with a and b pinned at ROOT (the root-replay idiom): the shared
+    // metric recomputes to the two distinct nonzero levels of c and x — an
+    // improvement of two, so the stored score tightens 4 -> 2.
+    assert.strictEqual(solver.enqueue(literal(base, 'a'), null), true);
+    assert.strictEqual(solver.enqueue(literal(base, 'b'), null), true);
+    for (const name of ['c', 'x']) {
+      const lit = literal(base, name);
+      assert.strictEqual(litValue(lit, solver.assigns), Value.UNSET);
+      solver.newDecisionLevel();
+      assert.strictEqual(solver.enqueue(lit, null), true);
+    }
+    assertGraph(solver, learned);
+    solver.analyze(learned);
+    assert.strictEqual(learned.lbd, 2, 'two-level improvement tightens into the glue tier');
+    solver.cancelUntil(0);
+
+    // Promotion is observable in selection: the reducible tier is now exactly
+    // the three gadget clauses, so ONE deletion results — had the clause
+    // stayed reducible (tier of four), the worse half would be two.
+    solver.reduceLearnedClauses();
+    assert.deepStrictEqual(solver.reductions[0].removed, [key(gadgets3[0])]);
+    assert.ok(solver.clauses.includes(learned), 'promoted clause is glue and survives');
+    assert.ok(solver.clauses.includes(gadgets3[1]), 'tier shrinkage protects the next-worst');
+    assert.ok(solver.clauses.includes(gadgets3[2]));
+    solver.checkInvariants();
+  });
+
+  it('ignores single-step recomputes, so incidental level drift never erodes the reducible tier', () => {
+    const base = compile(gadgets(3));
+    const solver = new AuditedSolver(base);
+    const clauses = Array.from({ length: 3 }, (_, index) => learnGadget(solver, base, index));
+    assert.ok(clauses.every((clause) => clause.lbd === 3));
+    // Root-replay idiom: with 'a' pinned at ROOT, reuse of clause 0 recomputes
+    // to two distinct nonzero levels — a single-step improvement, which the
+    // hysteresis deliberately does not apply.
+    assert.strictEqual(solver.enqueue(literal(base, 'a'), null), true);
+    for (const name of ['b', 'x0']) {
+      const lit = literal(base, name);
+      assert.strictEqual(litValue(lit, solver.assigns), Value.UNSET);
+      solver.newDecisionLevel();
+      assert.strictEqual(solver.enqueue(lit, null), true);
+    }
+    assertGraph(solver, clauses[0]);
+    solver.analyze(clauses[0]);
+    assert.strictEqual(clauses[0].lbd, 3, 'one-step drift is not a tightening');
+    solver.cancelUntil(0);
+    assert.strictEqual(solver.assigns[varOf(literal(base, 'a'))], Value.TRUE, 'root fact survives');
+    solver.checkInvariants();
+  });
+
+  it('never raises a stored LBD, even when a later reuse spans more distinct levels', () => {
+    const base = compile(
+      and(
+        implies('s', 'a'),
+        implies('s', 'b'),
+        implies('s', 'c'),
+        or(not('a'), not('x'), 't'),
+        or(not('b'), not('c'), not('x'), not('t')),
+      ),
+    );
+    const solver = new AuditedSolver(base);
+    decide(solver, literal(base, 's'));
+    decide(solver, literal(base, 'x'));
+    const conflict = solver.propagate();
+    assert.ok(conflict !== null);
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    assert.deepStrictEqual(
+      learned.lits.map((lit) => solver.level[varOf(lit)]),
+      [2, 1, 1, 1],
+    );
+    assert.strictEqual(learned.lbd, 2);
+    assertEntailed(base, learned);
+    solver.addLearnedClause(learned);
+    solver.cancelUntil(backjumpLevel);
+    assert.strictEqual(solver.enqueue(learned.lits[0], learned), true);
+    solver.cancelUntil(0);
+
+    // Later reuse with all four literals at DISTINCT nonzero levels: the
+    // recomputed score (four) exceeds the stored one and must NOT be applied.
+    for (const name of ['a', 'b', 'c', 'x']) {
+      const lit = literal(base, name);
+      assert.strictEqual(litValue(lit, solver.assigns), Value.UNSET);
+      solver.newDecisionLevel();
+      assert.strictEqual(solver.enqueue(lit, null), true);
+    }
+    assertGraph(solver, learned);
+    const activityBefore = learned.activity;
+    solver.analyze(learned);
+    assert.ok(learned.activity > activityBefore, 'participation still bumps activity');
+    assert.strictEqual(learned.lbd, 2, 'tightening is monotone: never an increase');
+    solver.cancelUntil(0);
+    solver.checkInvariants();
+  });
+
+  it('keeps lifetime clause-aging accounting across per-call incremental stat resets', () => {
+    const base = compile(gadgets(6));
+    const solver = new AuditedSolver(base, {
+      variablePriority: priority,
+      learnedClauseReductionThreshold: 2,
+    });
+    const stats1: SolverStats = {
+      decisions: 0,
+      propagations: 0,
+      conflicts: 0,
+      restarts: 0,
+      learnedClauses: 0,
+      learnedClausesCurrent: 0,
+      learnedLiterals: 0,
+      minimizedLiterals: 0,
+    };
+    assert.ok(solver.solveAssuming(undefined, stats1) !== null);
+    const roundsAfterCall1 = solver.reductions.length;
+    assert.ok(roundsAfterCall1 > 0, 'call 1 engaged real reduction rounds');
+    let expected = 1;
+    for (let round = 0; round < roundsAfterCall1; round += 1) {
+      expected *= 1 / 0.999;
+    }
+    assert.strictEqual(internals(solver).claInc, expected);
+    assert.strictEqual(stats1.learnedClauses, solver.stats.learnedClauses, 'call 1 owns all work');
+
+    // A second per-call scope zeroes and refills its own output object…
+    const stats2: SolverStats = {
+      decisions: 999,
+      propagations: 999,
+      conflicts: 999,
+      restarts: 999,
+      learnedClauses: 999,
+      learnedClausesCurrent: 999,
+      learnedLiterals: 999,
+      minimizedLiterals: 999,
+    };
+    const lifetimeBefore = { ...solver.stats };
+    solver.solveAssuming({ x0: Value.TRUE }, stats2);
+    assert.strictEqual(
+      internals(solver).claInc,
+      expected,
+      'per-call output zeroing must not reset the lifetime increment',
+    );
+    assert.strictEqual(
+      stats2.conflicts,
+      solver.stats.conflicts - lifetimeBefore.conflicts,
+      'per-call output carries only call-2 work',
+    );
+    assert.strictEqual(
+      stats2.learnedClausesCurrent,
+      solver.stats.learnedClausesCurrent,
+      'the live gauge stays absolute',
+    );
+
+    // …and the next round CONTINUES the same lifetime decay sequence rather
+    // than restarting from one.
+    solver.reduceLearnedClauses();
+    assert.strictEqual(internals(solver).claInc, expected * (1 / 0.999));
+    solver.checkInvariants();
+  });
+});
+
 describe('Solver automatic reduction cadence', () => {
   it('validates the internal knob and keeps the default exactly 10000', () => {
     for (const value of [
@@ -644,6 +981,8 @@ describe('Solver automatic reduction cadence', () => {
       restarts: 999,
       learnedClauses: 999,
       learnedClausesCurrent: 999,
+      learnedLiterals: 999,
+      minimizedLiterals: 999,
     };
     for (let run = 0; run < 2; run += 1) {
       const before = { ...stats };
@@ -651,6 +990,7 @@ describe('Solver automatic reduction cadence', () => {
         stats,
         enablePle: true,
         variablePriority: priority,
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         learnedClauseReductionThreshold: 3,
         maxConflicts: 13,
@@ -715,6 +1055,8 @@ describe('Solver automatic reduction cadence', () => {
       restarts: 999,
       learnedClauses: 999,
       learnedClausesCurrent: 999,
+      learnedLiterals: 999,
+      minimizedLiterals: 999,
     };
     for (let run = 0; run < 2; run += 1) {
       const before = { ...stats };
@@ -806,6 +1148,7 @@ describe('Solver forced reduction search acceptance', () => {
       enablePle: true,
       variablePriority: priority,
       learnedClauseReductionThreshold: 3,
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       maxConflicts: 1_000,
     });
@@ -867,7 +1210,8 @@ describe('Solver explicit database/watch/reason invariant checker', () => {
   it('rejects a dangling watch even when the dead object has equal clause contents', () => {
     const solver = new Solver(compile(or('a', 'b', 'c')));
     const clause = solver.clauses[0];
-    solver.watches[clause.lits[0]].push({ ...clause, lits: [...clause.lits] });
+    const dead = { ...clause, lits: [...clause.lits] };
+    solver.watches[clause.lits[0]].push({ clause: dead, blocker: dead.lits[1], twin: null });
     assert.throws(() => solver.checkInvariants(), /watch invariant.*not live/);
   });
 
@@ -887,7 +1231,7 @@ describe('Solver explicit database/watch/reason invariant checker', () => {
   it('rejects a duplicate watch reference', () => {
     const solver = new Solver(compile(or('a', 'b', 'c')));
     const clause = solver.clauses[0];
-    solver.watches[clause.lits[0]].push(clause);
+    solver.watches[clause.lits[0]].push({ clause, blocker: clause.lits[1], twin: null });
     assert.throws(() => solver.checkInvariants(), /watch invariant.*duplicate/);
   });
 
@@ -895,11 +1239,47 @@ describe('Solver explicit database/watch/reason invariant checker', () => {
     const solver = new Solver(compile(or('a', 'b', 'c')));
     const clause = solver.clauses[0];
     solver.watches[clause.lits[0]].pop();
-    solver.watches[clause.lits[2]].push(clause);
+    solver.watches[clause.lits[2]].push({ clause, blocker: clause.lits[1], twin: null });
     assert.throws(() => solver.checkInvariants(), /watch invariant.*incorrect/);
     const unitSolver = new Solver(compile(and('a')));
-    unitSolver.watches[0].push(unitSolver.clauses[0]);
+    unitSolver.watches[0].push({ clause: unitSolver.clauses[0], blocker: 0, twin: null });
     assert.throws(() => unitSolver.checkInvariants(), /watch invariant.*incorrect/);
+  });
+
+  it('rejects a stale blocker or a broken twin link', () => {
+    // The blocker parity audit: each entry's blocker must be the clause's
+    // current OTHER watch, and twins must cross-refer consistently.
+    const stale = new Solver(compile(or('a', 'b', 'c')));
+    const staleClause = stale.clauses[0];
+    const staleEntry = stale.watches[staleClause.lits[0]].find(
+      (entry) => entry.clause === staleClause,
+    );
+    assert.ok(staleEntry !== undefined);
+    staleEntry.blocker = staleClause.lits[0];
+    assert.throws(() => stale.checkInvariants(), /watch invariant.*stale blocker or twin/);
+
+    const brokenTwin = new Solver(compile(or('a', 'b', 'c')));
+    const twinClause = brokenTwin.clauses[0];
+    const twinEntry = brokenTwin.watches[twinClause.lits[0]].find(
+      (entry) => entry.clause === twinClause,
+    );
+    assert.ok(twinEntry !== undefined);
+    twinEntry.twin = null;
+    assert.throws(() => brokenTwin.checkInvariants(), /watch invariant.*stale blocker or twin/);
+
+    const swapped = new Solver(compile(or('a', 'b', 'c')));
+    const swappedClause = swapped.clauses[0];
+    const first = swapped.watches[swappedClause.lits[0]].find(
+      (entry) => entry.clause === swappedClause,
+    );
+    const second = swapped.watches[swappedClause.lits[1]].find(
+      (entry) => entry.clause === swappedClause,
+    );
+    assert.ok(first !== undefined && second !== undefined);
+    // Twins point at the same clause but must track OPPOSITE blockers.
+    first.twin = first;
+    assert.throws(() => swapped.checkInvariants(), /watch invariant.*stale blocker or twin/);
+    assert.strictEqual(second.blocker, swappedClause.lits[0], 'the other entry is untouched');
   });
 
   it('rejects duplicate database identities and stale, missing, or non-canonical registry entries', () => {

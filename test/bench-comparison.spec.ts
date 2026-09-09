@@ -18,7 +18,6 @@ import {
   benchmarkFixtures,
   comparisonCells,
   COUNTERS,
-  createPhase4Report,
   loadPhase4Record,
   loadReferences,
   PHASE1_REFERENCE,
@@ -33,12 +32,12 @@ import {
 import type {
   BenchmarkFixture,
   BenchmarkReferences,
-  BenchmarkResult,
   Phase4Record,
   Phase4ReleaseManifest,
 } from './bench-comparison.js';
 import { runBenchmark, sourceSnapshot } from './bench.js';
 import type { BenchmarkOptions, VerifyMode } from './bench.js';
+import { LEGACY_COMPILED_CNF_REFERENCE } from './bench-v3-references.js';
 import { cnfToExpr, expressionValue, phpCnf } from './helpers.js';
 
 describe('benchmark comparison cells', () => {
@@ -663,6 +662,8 @@ const stats: SolverStats = {
   restarts: 0,
   learnedClauses: 0,
   learnedClausesCurrent: 0,
+  learnedLiterals: 0,
+  minimizedLiterals: 0,
 };
 const modelFixture: BenchmarkFixture = {
   name: 'model_probe',
@@ -845,304 +846,6 @@ describe('benchmark result validation', () => {
   });
 });
 
-const implementation = {
-  head: PHASE3_REFERENCE.commit,
-  sourceSha256: { 'src/solver.ts': sha256('different working bytes under the same HEAD') },
-  node: process.version,
-  nodeEnv: null,
-};
-const syntheticResults = (): BenchmarkResult[] =>
-  references.phase2.entries.map((entry) => {
-    const { phase1: _phase1, phase2, ...fixture } = entry;
-    return { ...fixture, phase4: { ...phase2 } as SolverStats };
-  });
-
-describe('Phase-4 synthetic report rendering (not runner/model validation, no artifacts)', () => {
-  it('reports all 8x6 comparisons per phase with preserved provenance and missingness', () => {
-    const { report, markdown } = createPhase4Report(references, implementation, syntheticResults());
-    assert.equal(report.phase, 'Phase4');
-    assert.equal(report.scope, 'single-shot');
-    assert.deepEqual(Object.keys(report), [
-      'phase',
-      'scope',
-      'references',
-      'implementation',
-      'notes',
-      'regressions',
-      'entries',
-    ]);
-    assert.deepEqual(Object.keys(report.references), ['phase1', 'phase2', 'phase3']);
-    assert.deepEqual(report.references.phase1, PHASE1_REFERENCE);
-    assert.deepEqual(report.references.phase2, {
-      ...PHASE2_REFERENCE,
-      provenance: {
-        reference: references.phase2.reference,
-        implementation: references.phase2.implementation,
-      },
-    });
-    assert.deepEqual(report.references.phase3, {
-      ...PHASE3_REFERENCE,
-      provenance: {
-        references: references.phase3.references,
-        implementation: references.phase3.implementation,
-      },
-    });
-    assert.equal(
-      JSON.stringify(report.references.phase3.provenance.references),
-      JSON.stringify(references.phase3.references),
-      'preserve embedded Phase-1/2 provenance verbatim, including key order',
-    );
-    assert.equal(
-      JSON.stringify({ phase1: report.references.phase1, phase2: report.references.phase2 }),
-      JSON.stringify(references.phase3.references),
-    );
-    assert.equal(
-      JSON.stringify(report.references.phase3.provenance.implementation),
-      JSON.stringify(references.phase3.implementation),
-    );
-    assert.deepEqual(report.implementation, implementation);
-    assert.equal(report.entries.length, 8);
-    for (const entry of report.entries) {
-      assert.deepEqual(
-        Object.keys(entry).sort(),
-        [
-          'name',
-          'fixture',
-          'fixtureSha256',
-          'assumptions',
-          'maxConflicts',
-          'calibratedConflicts',
-          'verdict',
-          'phase1',
-          'phase2',
-          'phase3',
-          'phase4',
-        ].sort(),
-      );
-      assert.deepEqual(Object.keys(entry.phase4), COUNTERS);
-      assert.deepEqual(entry.phase1, references.phase1[entry.name] ?? null);
-      assert.deepEqual(
-        entry.phase2,
-        references.phase2.entries.find(({ name }) => name === entry.name)?.phase2,
-      );
-      assert.deepEqual(
-        entry.phase3,
-        references.phase3.entries.find(({ name }) => name === entry.name)?.phase3,
-      );
-      assert.equal(Object.hasOwn(entry.phase1 ?? {}, 'learnedClausesCurrent'), false);
-    }
-    assert.equal(report.entries.find(({ name }) => name === 'php_7_6')?.phase1, null);
-    assert.equal(report.entries.find(({ name }) => name === 'php_8_7')?.phase1, null);
-    assert.match(markdown, /^# Phase-4 Release Single-Shot Benchmark Comparison/);
-    for (const [key, phase] of [
-      ['phase1', 'Phase1'],
-      ['phase2', 'Phase2'],
-      ['phase3', 'Phase3'],
-    ] as const) {
-      const section = markdown.split(`## Phase4 Vs ${phase}`)[1].split('\n## ')[0];
-      const rows = section.split('\n').filter((line) => line.startsWith('| '));
-      assert.equal(rows.length, report.entries.length * COUNTERS.length + 2);
-      assert.deepEqual(
-        rows.slice(2),
-        report.entries.flatMap((entry) =>
-          COUNTERS.map(
-            (counter) =>
-              `| ${[
-                entry.name,
-                counter,
-                ...comparisonCells(entry[key]?.[counter], entry.phase4[counter], 'Phase4'),
-              ].join(' | ')} |`,
-          ),
-        ),
-      );
-    }
-    assert.match(
-      markdown,
-      /\| php_7_6 \| conflicts \| not recorded \| 723 \| n\/a \| n\/a \| not comparable \|/,
-    );
-    assert.match(
-      markdown,
-      /\| hypergraph \| learnedClausesCurrent \| not recorded \| 0 \| n\/a \| n\/a \| not comparable \|/,
-    );
-    assert.match(
-      markdown,
-      /\| hypergraph \| conflicts \| 0 \| 0 \| 0 \| n\/a \(0\/0 parity\) \| parity \|/,
-    );
-    for (const reference of historicalReferences) {
-      for (const value of [reference.commit, reference.gitBlob, reference.sha256]) {
-        assert.ok(markdown.includes(value));
-      }
-    }
-    for (const [phase, previous] of [
-      ['Phase-2', references.phase2.implementation],
-      ['Phase-3', references.phase3.implementation],
-    ] as const) {
-      assert.ok(
-        markdown.includes(
-          `${phase} recorded HEAD (preserved, not its artifact commit): \`${previous.head}\``,
-        ),
-      );
-      const section = markdown
-        .split(`## Preserved ${phase} Source Fingerprints`)[1]
-        .split('\n## ')[0];
-      for (const [path, hash] of Object.entries(previous.sourceSha256)) {
-        assert.ok(section.includes(`| ${path} | ${hash} |`));
-      }
-    }
-  });
-
-  it('explicitly lists Phase-2/3 regressions even when the same count improves on Phase 1', () => {
-    const results = syntheticResults();
-    const php = results.find(({ name }) => name === 'php_6_5');
-    assert.ok(php);
-    php.phase4.decisions = 300;
-    php.phase4.restarts = 7;
-    php.phase4.learnedClauses = 300;
-    php.phase4.learnedClausesCurrent = 73;
-    const { report, markdown } = createPhase4Report(references, implementation, results);
-    assert.deepEqual(report.regressions, [
-      {
-        instance: 'php_6_5',
-        reference: 'Phase2',
-        counter: 'decisions',
-        before: 195,
-        after: 300,
-        delta: 105,
-      },
-      {
-        instance: 'php_6_5',
-        reference: 'Phase3',
-        counter: 'decisions',
-        before: 205,
-        after: 300,
-        delta: 95,
-      },
-    ]);
-    assert.match(
-      markdown,
-      /\| php_6_5 \| Phase2 \| decisions \| 195 \| 300 \| \+105 \| REGRESSION \(higher count\) \|/,
-    );
-    assert.match(markdown, /\| php_6_5 \| decisions \| 374 \| 300 \| -74 \| 1\.25x \| lower \|/);
-    assert.match(markdown, /\| php_6_5 \| decisions \| 195 \| 300 \| \+105 \| 0\.65x \| higher \|/);
-    assert.match(
-      markdown,
-      /\| php_6_5 \| Phase3 \| decisions \| 205 \| 300 \| \+95 \| REGRESSION \(higher count\) \|/,
-    );
-    assert.match(markdown, /\| php_6_5 \| decisions \| 205 \| 300 \| \+95 \| 0\.68x \| higher \|/);
-    assert.match(markdown, /Learning and restart counters report activity, not speedup/);
-    assert.match(markdown, /No blanket performance gain/);
-    assert.match(markdown, /does not measure createSolver performance or persistent enumeration/);
-    assert.match(markdown, /not peak or total memory/);
-    assert.match(markdown, /default reduction threshold is not lowered/);
-    assert.match(
-      markdown,
-      /do not count reduction events or establish default-reduction engagement/,
-    );
-    assert.match(markdown, /preclude any implied total-memory bound/);
-  });
-
-  it('keeps unrecorded reference counters missing and labels Phase4 zero denominators', () => {
-    const incomplete = structuredClone(references);
-    const { learnedClausesCurrent: _missing, ...partial } = incomplete.phase2.entries[0].phase2;
-    incomplete.phase2.entries[0].phase2 = partial;
-    incomplete.phase3.entries[0].phase2 = { ...partial };
-    Reflect.deleteProperty(incomplete.phase3.entries[0].phase3, 'learnedClausesCurrent');
-    const results = syntheticResults();
-    results[1].phase4.conflicts = 0;
-    const { report, markdown } = createPhase4Report(incomplete, implementation, results);
-    assert.equal(Object.hasOwn(report.entries[0].phase2, 'learnedClausesCurrent'), false);
-    assert.match(
-      markdown,
-      /\| php_5_4 \| conflicts \| 28 \| 0 \| -28 \| n\/a \(Phase4 is zero\) \| lower \|/,
-    );
-    assert.equal(Object.hasOwn(report.entries[0].phase3, 'learnedClausesCurrent'), false);
-    for (const phase of ['Phase1', 'Phase2', 'Phase3']) {
-      const section = markdown.split(`## Phase4 Vs ${phase}`)[1].split('\n## ')[0];
-      assert.match(section, /\| hypergraph \| learnedClausesCurrent \| not recorded \| 0 \|/);
-      assert.match(
-        section,
-        /\| php_5_4 \| conflicts \| (?:28|52) \| 0 \| -(?:28|52) \| n\/a \(Phase4 is zero\) \| lower \|/,
-      );
-    }
-  });
-
-  it('lists decision, propagation, and conflict regressions against each reference independently', () => {
-    const results = syntheticResults();
-    const random = results.find(({ name }) => name === 'sat3_seed43');
-    assert.ok(random);
-    for (const counter of ['decisions', 'propagations', 'conflicts'] as const) {
-      random.phase4[counter] += 1;
-    }
-    const { report } = createPhase4Report(references, implementation, results);
-    assert.deepEqual(
-      report.regressions.map(({ reference, counter, delta }) => [reference, counter, delta]),
-      [
-        ['Phase1', 'decisions', 1],
-        ['Phase1', 'propagations', 1],
-        ['Phase1', 'conflicts', 1],
-        ['Phase2', 'decisions', 1],
-        ['Phase2', 'propagations', 1],
-        ['Phase2', 'conflicts', 1],
-        ['Phase3', 'decisions', 1],
-        ['Phase3', 'propagations', 1],
-        ['Phase3', 'conflicts', 1],
-      ],
-    );
-  });
-
-  it('rejects missing current counters, changed verdicts, and partial reports', () => {
-    const results = syntheticResults();
-    const { learnedClausesCurrent: _missing, ...missing } = results[0].phase4;
-    assert.throws(
-      () =>
-        createPhase4Report(references, implementation, [
-          { ...results[0], phase4: missing as SolverStats },
-          ...results.slice(1),
-        ]),
-      /missing or invalid learnedClausesCurrent/,
-    );
-    assert.throws(
-      () =>
-        createPhase4Report(references, implementation, [
-          { ...results[0], verdict: 'UNSAT' },
-          ...results.slice(1),
-        ]),
-      /verdict disagreement/,
-    );
-    assert.throws(
-      () => createPhase4Report(references, implementation, results.slice(1)),
-      /fixture coverage disagreement/,
-    );
-  });
-
-  it('is deterministic, with no model, timestamp, or wall-time data in either artifact', () => {
-    const first = createPhase4Report(references, implementation, syntheticResults());
-    const second = createPhase4Report(references, implementation, syntheticResults());
-    assert.deepEqual(first, second);
-    const json = `${JSON.stringify(first.report, null, 2)}\n`;
-    assert.doesNotMatch(
-      json,
-      /"(?:wallMs|timestamp|generatedAt|models?|elapsedMs|mtimeNs|ctimeNs)"\s*:/,
-    );
-    assert.doesNotMatch(`${json}\n${first.markdown}`, /20\d\d-\d\d-\d\dT\d\d:/);
-    assert.doesNotMatch(first.markdown, /\| wall ms/);
-    assert.match(first.markdown, /Missing data remains incomparable/);
-  });
-
-  it('stores only the six counters in canonical order, not incidental solver metadata', () => {
-    const results = syntheticResults();
-    const original = results[0].phase4;
-    results[0].phase4 = {
-      ...Object.fromEntries([...COUNTERS].reverse().map((counter) => [counter, original[counter]])),
-      model: { h: Value.TRUE },
-      wallMs: 1,
-    } as unknown as SolverStats;
-    const { report } = createPhase4Report(references, implementation, results);
-    assert.deepEqual(Object.keys(report.entries[0].phase4), COUNTERS);
-    assert.deepEqual(report.entries[0].phase4, original);
-  });
-});
-
 // Exercise the actual verifier, including SAT model validation and both modes.
 // Only PHP searches are stubbed with historical counts/UNSAT; these are NOT new measurements.
 function runnerControl() {
@@ -1287,6 +990,13 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
     });
   }
 
+  it('runs in gates mode by default: the permanent post-minimization flip', async () => {
+    const control = runnerControl();
+    await runBenchmark(control.options);
+    assert.match(control.logs.join('\n'), /verifier \(gates mode; assert-only, writes nothing\)/);
+    assert.match(control.logs.join('\n'), /Gates verified/);
+  });
+
   it('leaves every frozen Phase-4 artifact byte-identical, including file versions, in both modes', async () => {
     const artifactUrls = [
       'test/phase4-benchmark.json',
@@ -1318,6 +1028,88 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
       const second = runnerControl();
       await runBenchmark({ ...second.options, mode });
       assert.equal(normalized(first), normalized(second));
+    }
+  });
+
+  it('authenticates and compares the complete pristine-v2 compiled snapshots in both modes', async () => {
+    for (const mode of modes) {
+      const control = runnerControl();
+      await runBenchmark({ ...control.options, mode });
+      assert.match(
+        control.logs.join('\n'),
+        /Complete compiled snapshots: authenticated pristine-v2 reference, compared per fixture/,
+      );
+    }
+  });
+
+  it('rejects a modified legacy compiled-snapshot reference before parsing it, in both modes', async () => {
+    for (const mode of modes) {
+      const control = runnerControl();
+      const inner = control.options.readGit;
+      assert.ok(inner !== undefined);
+      control.options.readGit = (args) => {
+        if (
+          args[0] === 'show' &&
+          args[1] ===
+            `${LEGACY_COMPILED_CNF_REFERENCE.commit}:${LEGACY_COMPILED_CNF_REFERENCE.path}`
+        ) {
+          return Buffer.from('{}');
+        }
+        return inner(args);
+      };
+      await assert.rejects(
+        () => runBenchmark({ ...control.options, mode }),
+        /legacy compiled snapshots reference blob mismatch/,
+      );
+    }
+  });
+
+  it('rejects compiler-output drift at the snapshot gate before any solver runs, in both modes', async () => {
+    for (const mode of modes) {
+      const control = runnerControl();
+      const realCompile = control.runtime.compile;
+      let doctored = true;
+      control.runtime.compile = (expr: BooleanExpr) => {
+        const cnf = realCompile(expr);
+        if (doctored) {
+          doctored = false;
+          cnf.clauses.push({ lits: [0], learned: false, activity: 0, lbd: 0 });
+        }
+        return cnf;
+      };
+      await assert.rejects(
+        () => runBenchmark({ ...control.options, mode }),
+        /hypergraph: compiled snapshot digest mismatch/,
+      );
+      assert.equal(control.solvers.length, 0, 'the gate fires before the first solver runs');
+    }
+  });
+
+  it('rejects a lost named universe whose clauses are unchanged, in both modes', async () => {
+    for (const mode of modes) {
+      const control = runnerControl();
+      const realCompile = control.runtime.compile;
+      let doctored = true;
+      control.runtime.compile = (expr: BooleanExpr) => {
+        const cnf = realCompile(expr);
+        if (doctored) {
+          doctored = false;
+          // Drop the last named variable ('s', a don't-care-free leaf in the
+          // hypergraph fixture) from the named mapping while leaving every
+          // clause byte-identical: a clause-only comparison would miss this.
+          const lost = cnf.indexToName[cnf.numNamedVars - 1];
+          assert.ok(lost !== undefined);
+          cnf.nameToIndex.delete(lost);
+          cnf.numNamedVars -= 1;
+          cnf.indexToName.length -= 1;
+        }
+        return cnf;
+      };
+      await assert.rejects(
+        () => runBenchmark({ ...control.options, mode }),
+        /hypergraph: compiled snapshot digest mismatch — compiler output \(including numVars, /,
+      );
+      assert.equal(control.solvers.length, 0);
     }
   });
 

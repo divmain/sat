@@ -55,14 +55,28 @@ export function isVariable(x: unknown): x is Variable {
 
 // Accumulates into `variables` and returns it, so callers collect the
 // variable set once per formula instead of merging per-subtree results;
-// the recursion mirrors expression nesting.
-export function getVariables(expr: BooleanExpr, variables = new Set<Variable>()): Set<Variable> {
+// the recursion mirrors expression nesting. `visited` memoizes by object
+// identity within one collection: a subtree shared by several parents (xor's
+// duplicated operands, or an AST assembled with structural sharing) is
+// traversed once, so collecting a left-deep xor chain is linear in the object
+// graph instead of exponential in the chain length. The visited set is
+// scoped to a single top-level call and never survives it, so mutating an
+// AST between collections is always observed correctly.
+export function getVariables(
+  expr: BooleanExpr,
+  variables = new Set<Variable>(),
+  visited = new Set<BooleanExpr>(),
+): Set<Variable> {
+  if (visited.has(expr)) {
+    return variables;
+  }
+  visited.add(expr);
   if ('and' in expr) {
     for (const subExpr of expr.and) {
       if (isVariable(subExpr)) {
         variables.add(subExpr);
       } else {
-        getVariables(subExpr, variables);
+        getVariables(subExpr, variables, visited);
       }
     }
   } else if ('or' in expr) {
@@ -70,14 +84,14 @@ export function getVariables(expr: BooleanExpr, variables = new Set<Variable>())
       if (isVariable(subExpr)) {
         variables.add(subExpr);
       } else {
-        getVariables(subExpr, variables);
+        getVariables(subExpr, variables, visited);
       }
     }
   } else if ('not' in expr) {
     if (isVariable(expr.not)) {
       variables.add(expr.not);
     } else {
-      getVariables(expr.not, variables);
+      getVariables(expr.not, variables, visited);
     }
   }
   return variables;

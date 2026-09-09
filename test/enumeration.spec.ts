@@ -14,6 +14,7 @@ import {
   expressionValue,
   modelKey,
   referenceModels,
+  watchesClause,
 } from './helpers.js';
 
 const counters = (value = 0): SolverStats => ({
@@ -23,6 +24,8 @@ const counters = (value = 0): SolverStats => ({
   restarts: value,
   learnedClauses: value,
   learnedClausesCurrent: value,
+  learnedLiterals: value,
+  minimizedLiterals: value,
 });
 const key = (clause: Clause): string => [...clause.lits].sort((a, b) => a - b).join(',');
 const pairs = (count: number): BooleanExpr =>
@@ -34,6 +37,7 @@ interface Internals {
   readonly enablePle: boolean;
   readonly learnedClauseReductionThreshold: number;
   readonly restartBaseConflicts: number;
+  readonly restartPolicy: { readonly kind: 'ema' | 'luby' };
   readonly maxConflicts: number | undefined;
 }
 // Observation only: no tests install arbitrary learned clauses or manufacture
@@ -378,7 +382,7 @@ describe('canonical permanent promotion and learned bookkeeping', () => {
     assert.strictEqual(solver.addPermanentClause([...learned.lits, ...learned.lits]), learned);
     assert.strictEqual(solver.stats.learnedClauses, 1);
     assert.strictEqual(solver.stats.learnedClausesCurrent, 0);
-    assert.ok(solver.watches.every((list) => !list.includes(learned)));
+    assert.ok(solver.watches.every((list) => !watchesClause(list, learned)));
     solver.checkInvariants();
     assertReasons(solver);
   });
@@ -612,6 +616,7 @@ describe('persistent enumeration production path', () => {
           conflicts: 1,
           learnedClauses: 1,
           learnedClausesCurrent: 1,
+          learnedLiterals: 1,
         },
         root: [0],
       },
@@ -624,6 +629,7 @@ describe('persistent enumeration production path', () => {
           conflicts: 1,
           learnedClauses: 1,
           learnedClausesCurrent: 1,
+          learnedLiterals: 1,
         },
         root: [0, 2],
       },
@@ -636,6 +642,7 @@ describe('persistent enumeration production path', () => {
           conflicts: 2,
           learnedClauses: 1,
           learnedClausesCurrent: 1,
+          learnedLiterals: 1,
         },
         root: [0, 2],
       },
@@ -707,6 +714,7 @@ describe('persistent enumeration production path', () => {
       assert.strictEqual(internals(this).enablePle, false);
       assert.strictEqual(internals(this).learnedClauseReductionThreshold, 10_000);
       assert.strictEqual(internals(this).restartBaseConflicts, 100);
+      assert.strictEqual(internals(this).restartPolicy.kind, 'ema');
       assert.strictEqual(internals(this).maxConflicts, undefined);
       return original.call(this);
     });
@@ -714,6 +722,7 @@ describe('persistent enumeration production path', () => {
       enablePle: true,
       learnedClauseReductionThreshold: 1,
       restartBaseConflicts: 1,
+      restartPolicy: 'luby',
       maxConflicts: 0,
     } as SolveOptions;
     assert.strictEqual(getAllSolutions(or('a', 'b'), extra).length, 3);
@@ -789,13 +798,45 @@ describe('persistent enumeration production path', () => {
   });
 
   it('preserves constant assumptions across genuine restarts and deletion on the shared loop', () => {
-    const expr = pairs(4);
+    // pairs(5): deep enough trails that the reducible tier (LBD > 2) is
+    // genuinely populated, so the two-tier policy really deletes — pairs(4)
+    // learned almost exclusively glue-tier clauses, which the pinned policy
+    // correctly never deletes. The reference is combinatorial (the naive
+    // enumerator caps at 8 variables), double-checked by the evaluator.
+    const expr = pairs(5);
     const assumptions = { a1: Value.TRUE, b2: Value.FALSE };
-    const expected = referenceModels(expr).filter(
-      (model) => model.a1 === Value.TRUE && model.b2 === Value.FALSE,
-    );
-    // The first pair has two choices, the second one, and the other two three.
-    assert.strictEqual(expected.length, 2 * 3 ** 2);
+    // Pair 1 admits (T,F),(T,T) under a1=TRUE; b2=FALSE forces pair 2 to
+    // (T,F); the other three pairs each admit (F,T),(T,F),(T,T).
+    const pairChoices = [
+      [Value.FALSE, Value.TRUE],
+      [Value.TRUE, Value.FALSE],
+      [Value.TRUE, Value.TRUE],
+    ] as const;
+    const expected: VariableAssignments[] = [];
+    for (const b1 of [Value.FALSE, Value.TRUE] as const) {
+      for (const [a3, b3] of pairChoices) {
+        for (const [a4, b4] of pairChoices) {
+          for (const [a5, b5] of pairChoices) {
+            expected.push({
+              a1: Value.TRUE,
+              b1,
+              a2: Value.TRUE,
+              b2: Value.FALSE,
+              a3,
+              b3,
+              a4,
+              b4,
+              a5,
+              b5,
+            });
+          }
+        }
+      }
+    }
+    assert.strictEqual(expected.length, 2 * 3 ** 3);
+    for (const model of expected) {
+      assert.strictEqual(expressionValue(expr, model), Value.TRUE, 'reference is sound');
+    }
     let previous: { models: VariableAssignments[]; stats: SolverStats } | undefined;
     for (let run = 0; run < 2; run += 1) {
       const base = compile(expr);
@@ -813,6 +854,7 @@ describe('persistent enumeration production path', () => {
       const solver = new AssumptionAudit(base, {
         assumptions,
         enablePle: false,
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         learnedClauseReductionThreshold: 1,
       });
@@ -894,6 +936,10 @@ describe('persistent enumeration production path', () => {
     // peak rounded up to a power of two), not a sum across disposable solvers.
     // Protected/permanent clauses are not suppressed to meet this bound;
     // blockers intentionally grow to59049. No blanket memory or speedup claim.
+    // Re-observed under the task-5cad two-tier/decayed-activity/dynamic-LBD
+    // policy: the IDENTICAL 29525-conflict trajectory now peaks at live120
+    // (final live111, 29413 deletions in 922 deleting rounds) — comfortably
+    // within the unchanged bound.
     const LIVE_LEARNED_BOUND = 256;
     const expr = pairs(10);
     const solver = new EnumerationAudit(compile(expr), {

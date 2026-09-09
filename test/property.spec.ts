@@ -81,6 +81,12 @@ const MAX_CONSISTENT_ASSUMPTIONS = 3;
 interface ReductionCounts {
   reductionCalls: number;
   deletedClauses: number;
+  // Rounds with NO possible deletion under the pinned two-tier policy: the
+  // reducible tier's worse-half window was empty (< 2 reducible clauses) or
+  // every clause in it was reason-locked. Zero-deletion paths are acceptable
+  // only when EVERY round is explained this way.
+  candidateFreeRounds: number;
+  fullyLockedRounds: number;
 }
 
 interface HarnessCounts {
@@ -98,9 +104,24 @@ function createSolvers(useReduction: boolean): {
     formulas: 0,
     assumptions: 0,
     reductions: {
-      singleShot: { reductionCalls: 0, deletedClauses: 0 },
-      enumeration: { reductionCalls: 0, deletedClauses: 0 },
-      enumerationAfterModel: { reductionCalls: 0, deletedClauses: 0 },
+      singleShot: {
+        reductionCalls: 0,
+        deletedClauses: 0,
+        candidateFreeRounds: 0,
+        fullyLockedRounds: 0,
+      },
+      enumeration: {
+        reductionCalls: 0,
+        deletedClauses: 0,
+        candidateFreeRounds: 0,
+        fullyLockedRounds: 0,
+      },
+      enumerationAfterModel: {
+        reductionCalls: 0,
+        deletedClauses: 0,
+        candidateFreeRounds: 0,
+        fullyLockedRounds: 0,
+      },
     },
   };
   if (!useReduction) {
@@ -123,6 +144,8 @@ function createSolvers(useReduction: boolean): {
           restarts: 0,
           learnedClauses: 0,
           learnedClausesCurrent: 0,
+          learnedLiterals: 0,
+          minimizedLiterals: 0,
         });
       }
       super(compile(expr), {
@@ -187,7 +210,30 @@ function createSolvers(useReduction: boolean): {
         'reduction only removes clauses',
       );
       assert.strictEqual(learnedAfter.length, learnedBefore.length - deleted.length);
-      assert.ok(deleted.length <= Math.floor(learnedBefore.length / 2), 'at most the worse half');
+      // Exact two-tier selection fidelity: the deleted set is precisely the
+      // unlocked worse half of the reducible tier (stable activity order over
+      // admission order). Glue-tier clauses are never candidates at all.
+      const reducible = learnedBefore.filter((clause) => clause.lbd > 2);
+      const ranked = reducible
+        .map((clause, admission) => ({ clause, admission }))
+        .sort(
+          (left, right) =>
+            left.clause.activity - right.clause.activity || left.admission - right.admission,
+        );
+      const window = ranked.slice(0, Math.floor(ranked.length / 2)).map(({ clause }) => clause);
+      const expectedDeleted = new Set(window.filter((clause) => !reasons.includes(clause)));
+      assert.deepStrictEqual(
+        new Set(deleted),
+        expectedDeleted,
+        'exactly the unlocked worse half of the reducible tier',
+      );
+      if (deleted.length === 0) {
+        if (window.length === 0) {
+          this.reductions.candidateFreeRounds += 1;
+        } else {
+          this.reductions.fullyLockedRounds += 1;
+        }
+      }
       for (const clause of protectedClauses) {
         assert.ok(after.has(clause), 'originals, blockers, all reasons and LBD <= 2 survive');
       }
@@ -209,6 +255,13 @@ function createSolvers(useReduction: boolean): {
       if (this.reductions === counts.reductions.enumeration && this.solveCalls > 1) {
         counts.reductions.enumerationAfterModel.reductionCalls += 1;
         counts.reductions.enumerationAfterModel.deletedClauses += deleted.length;
+        if (deleted.length === 0) {
+          if (window.length === 0) {
+            counts.reductions.enumerationAfterModel.candidateFreeRounds += 1;
+          } else {
+            counts.reductions.enumerationAfterModel.fullyLockedRounds += 1;
+          }
+        }
       }
     }
   }
@@ -557,12 +610,29 @@ for (const useReduction of [false, true]) {
                 reductions.reductionCalls > 0,
                 `${label} ${path} must exercise automatic reduction`,
               );
-              assert.ok(
-                reductions.deletedClauses > 0,
-                `${label} ${path} must exercise actual clause deletion`,
-              );
+              // The pinned two-tier policy deletes only from the reducible
+              // tier's worse-half window, so a path with few reducible
+              // candidates may legitimately delete nothing — but only when
+              // EVERY round is explained (empty window or fully locked).
+              // PLE single-shot streams learn almost exclusively glue-tier
+              // clauses (retained tainted roots do not count toward LBD);
+              // deterministic single-shot deletion coverage lives in
+              // reduction.spec.ts (PLE-enabled SAT gadgets acceptance).
+              if (path === 'singleShot') {
+                assert.ok(
+                  reductions.deletedClauses > 0 ||
+                    reductions.candidateFreeRounds + reductions.fullyLockedRounds ===
+                      reductions.reductionCalls,
+                  `${label} ${path}: zero-deletion rounds must all be candidate-free or locked`,
+                );
+              } else {
+                assert.ok(
+                  reductions.deletedClauses > 0,
+                  `${label} ${path} must exercise actual clause deletion`,
+                );
+              }
               context.diagnostic(
-                `${path}: ${reductions.reductionCalls} automatic reductions; ${reductions.deletedClauses} actual deletions`,
+                `${path}: ${reductions.reductionCalls} automatic reductions; ${reductions.deletedClauses} actual deletions; ${reductions.candidateFreeRounds} candidate-free; ${reductions.fullyLockedRounds} fully locked`,
               );
             }
           }

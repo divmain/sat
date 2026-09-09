@@ -1,6 +1,6 @@
 # @divmain/sat, a SAT solver library
 
-Solve Boolean satisfiability problems in Node.js with a zero-runtime-dependency, TypeScript/ESM library. Version 2 compiles expressions to CNF with a Tseitin transformation and uses an iterative **conflict-driven clause learning (CDCL)** solver: two-watched-literal propagation, first-UIP learning, non-chronological backtracking, VSIDS, phase saving, Luby restarts, and learned-clause reduction. Find one model, enumerate all models, or compile once and solve repeatedly under different assumptions.
+Solve Boolean satisfiability problems in Node.js with a zero-runtime-dependency, TypeScript/ESM library. Version 2 compiles expressions to CNF with a Tseitin transformation and uses an iterative **conflict-driven clause learning (CDCL)** solver: two-watched-literal propagation, first-UIP learning, non-chronological backtracking, VSIDS, phase saving, deterministic Glucose-style EMA restarts with blocking, and learned-clause reduction. Find one model, enumerate all models, or compile once and solve repeatedly under different assumptions.
 
 ## Installation
 
@@ -129,6 +129,8 @@ interface SolverStats {
   restarts: number;
   learnedClauses: number;
   learnedClausesCurrent: number;
+  learnedLiterals: number;
+  minimizedLiterals: number;
 }
 
 interface SolveOptions {
@@ -189,7 +191,7 @@ A genuine root conflict proving the base formula UNSAT is cached; later valid ca
 
 ### `SolverStats`
 
-Supply all six writable fields. Outputs are reset at entry, before compilation/assumption validation, then populated with actual work. Do not interpret an unchanged or zero counter as a satisfiability verdict.
+Supply all eight writable fields. Outputs are reset at entry, before compilation/assumption validation, then populated with actual work. Do not interpret an unchanged or zero counter as a satisfiability verdict.
 
 ```javascript
 import { createSolver, getSolution, xor, Value } from '@divmain/sat';
@@ -197,6 +199,7 @@ import { createSolver, getSolution, xor, Value } from '@divmain/sat';
 const stats = {
   decisions: 0, propagations: 0, conflicts: 0,
   restarts: 0, learnedClauses: 0, learnedClausesCurrent: 0,
+  learnedLiterals: 0, minimizedLiterals: 0,
 };
 getSolution(xor('a', 'b'), { stats });
 console.log(stats.decisions); // 1
@@ -219,7 +222,7 @@ Measurement scopes differ deliberately:
 
 - `getSolution`: the whole call, including construction-time unit enqueues.
 - `getAllSolutions`: reset once, then accumulate across construction, all models/blockers, and the terminal UNSAT search. The live count is the final database population, not a sum across models.
-- `SatSolver.solve`: **this invocation's** work and new learned admissions, plus the **absolute retained** live count. Thus `learnedClausesCurrent` can exceed this call's `learnedClauses`. Creating the solver and enqueueing initial units occur before these measurements; later root implications count when actually enqueued. Outputs also report work done before a callback throws. Resetting the output does not reset the retained solver state or lifetime internal accounting; each search starts its own restart schedule.
+- `SatSolver.solve`: **this invocation's** work and new learned admissions, plus the **absolute retained** live count. Thus `learnedClausesCurrent` can exceed this call's `learnedClauses`. Creating the solver and enqueueing initial units occur before these measurements; later root implications count when actually enqueued. Outputs also report work done before a callback throws. Resetting the output does not reset the retained solver state or lifetime internal accounting; each search starts its own restart epoch. Restart timing follows a deterministic EMA policy over learned-clause LBDs whose fast/slow histories are **lifetime-scoped**: they persist across searches and incremental calls on the same handle, so one call's restart timing can reflect earlier calls' learning (a disclosed change from the v2 per-search Luby schedule).
 
 ## Guiding Decisions with `variablePriority`
 
@@ -276,6 +279,7 @@ const expr = and(...prerequisites.map(([target, prerequisite]) => implies(target
 const stats: SolverStats = {
   decisions: 0, propagations: 0, conflicts: 0,
   restarts: 0, learnedClauses: 0, learnedClausesCurrent: 0,
+  learnedLiterals: 0, minimizedLiterals: 0,
 };
 const defaultModel = getSolution(expr, { assumptions: { h: Value.TRUE }, stats });
 console.log(stats.decisions, stats.propagations, stats.conflicts); // 2 16 0

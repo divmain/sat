@@ -8,6 +8,7 @@ import { Solver } from '../src/solver.js';
 import type { SolverStats, VariablePriority } from '../src/solver.js';
 import {
   assertModelShape,
+  assertWatchListsSurvive,
   cnfToExpr,
   expressionValue,
   mulberry32,
@@ -15,6 +16,8 @@ import {
   random3Cnf,
   randomFormula,
   referenceModels,
+  snapshotWatches,
+  watchesClause,
 } from './helpers';
 import { PHP_REGRESSIONS } from './php-regressions';
 
@@ -89,11 +92,29 @@ function assertWatches(solver: Solver): void {
   assert.strictEqual(new Set(keys).size, keys.length, 'no duplicate canonical clauses');
   for (let lit = 0; lit < solver.watches.length; lit += 1) {
     const list = solver.watches[lit];
-    assert.strictEqual(new Set(list).size, list.length, 'no duplicate watch references');
-    for (const clause of list) {
+    assert.strictEqual(new Set(list).size, list.length, 'no duplicate watch entries');
+    for (const entry of list) {
+      const clause = entry.clause;
       const actual = memberships.get(clause);
       assert.ok(actual !== undefined, 'every watch refers to a registered clause');
       actual.push(lit);
+      // The blocker caches the clause's OTHER watch, and the twin link is symmetric.
+      const other = clause.lits[0] === lit ? clause.lits[1] : clause.lits[0];
+      assert.strictEqual(entry.blocker, other, 'blocker tracks the current other watch');
+      assert.strictEqual(entry.twin?.clause, clause, 'twin refers to the same clause');
+      assert.strictEqual(entry.twin?.twin, entry, 'twin link is symmetric');
+    }
+  }
+  for (let lit = 0; lit < solver.binaryWatches.length; lit += 1) {
+    const list = solver.binaryWatches[lit];
+    assert.strictEqual(new Set(list).size, list.length, 'no duplicate binary watch entries');
+    for (const entry of list) {
+      const clause = entry.clause;
+      const actual = memberships.get(clause);
+      assert.ok(actual !== undefined, 'every binary watch refers to a registered clause');
+      actual.push(lit);
+      const other = clause.lits[0] === lit ? clause.lits[1] : clause.lits[0];
+      assert.strictEqual(entry.other, other, 'binary entry names the opposite literal');
     }
   }
   for (const [clause, actual] of memberships) {
@@ -236,7 +257,7 @@ class CheckedSolver extends RestartTraceSolver {
       lits: [...clause.lits],
       activity: clause.activity,
     }));
-    const watches = this.watches.map((list) => [...list]);
+    const watches = snapshotWatches(this.watches, this.binaryWatches);
     const activity = this.activity.slice();
     const phases = this.polarity.slice();
     const increment = heapState(this).varInc;
@@ -249,7 +270,12 @@ class CheckedSolver extends RestartTraceSolver {
       assert.deepStrictEqual(this.clauses[index].lits, contents[index].lits);
       assert.strictEqual(this.clauses[index].activity, contents[index].activity);
     }
-    assert.deepStrictEqual(this.watches, watches, 'cancellation does not rebuild watch lists');
+    assertWatchListsSurvive(
+      this.watches,
+      this.binaryWatches,
+      watches,
+      'cancellation does not rebuild watch lists',
+    );
     assert.deepStrictEqual(this.activity, activity, 'retain VSIDS scores');
     assert.deepStrictEqual(this.polarity, phases, 'retain EVERY saved assignment phase');
     assert.strictEqual(heapState(this).varInc, increment, 'no restart bump/decay/reset');
@@ -371,6 +397,7 @@ describe('Solver exact Luby restart budgets', () => {
     it(`uses exact Luby conflict intervals scaled by ${base}, not ordinary backjumps`, () => {
       const expr = gadgets(12 * base);
       const solver = new CheckedSolver(compile(expr), {
+        restartPolicy: 'luby',
         restartBaseConflicts: base,
         enablePle: true,
         variablePriority: gadgetPriority,
@@ -398,6 +425,7 @@ describe('Solver exact Luby restart budgets', () => {
   it('does not restart early, or count an ordinary backjump as a restart', () => {
     const expr = gadget();
     const solver = new CheckedSolver(compile(expr), {
+      restartPolicy: 'luby',
       restartBaseConflicts: 2,
       variablePriority: gadgetPriority,
     });
@@ -412,6 +440,7 @@ describe('Solver exact Luby restart budgets', () => {
   for (const maxConflicts of [1, 7]) {
     it(`keeps the hard cap ${maxConflicts} independent of restart epochs and throws before learning`, () => {
       const solver = new RestartTraceSolver(compile(gadgets(12)), {
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         variablePriority: gadgetPriority,
         maxConflicts,
@@ -438,12 +467,15 @@ describe('Solver exact Luby restart budgets', () => {
       restarts: 999,
       learnedClauses: 999,
       learnedClausesCurrent: 999,
+      learnedLiterals: 999,
+      minimizedLiterals: 999,
     };
     for (let run = 0; run < 2; run += 1) {
       const before = { ...stats };
       const solver = new RestartTraceSolver(compile(gadgets(12)), {
         stats,
         maxConflicts: 13,
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         variablePriority: gadgetPriority,
       });
@@ -463,7 +495,11 @@ describe('Solver exact Luby restart budgets', () => {
     const free = and(
       ...Array.from({ length: 128 }, (_, index) => or(`v${index}`, not(`v${index}`))),
     );
-    const solver = new CheckedSolver(compile(free), { restartBaseConflicts: 1, maxConflicts: 0 });
+    const solver = new CheckedSolver(compile(free), {
+      restartPolicy: 'luby',
+      restartBaseConflicts: 1,
+      maxConflicts: 0,
+    });
     assert.strictEqual(solver.solve(), true);
     assert.strictEqual(solver.stats.decisions, 128);
     assert.strictEqual(solver.stats.restarts, 0);
@@ -479,6 +515,7 @@ describe('Solver exact Luby restart budgets', () => {
     ];
     for (const [expr, sat, assumptions] of cases) {
       const solver = new RestartTraceSolver(compile(expr), {
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         assumptions,
       });
@@ -501,7 +538,7 @@ describe('Solver restart ordering and retained state', () => {
       or('a', not('b'), not('t')),
     );
     const base = compile(expr);
-    const solver = new CheckedSolver(base, { restartBaseConflicts: 1 });
+    const solver = new CheckedSolver(base, { restartPolicy: 'luby', restartBaseConflicts: 1 });
     assert.strictEqual(solver.solve(), true);
     const first = solver.boundaries[0];
     assert.strictEqual(first.conflict, 1);
@@ -545,6 +582,7 @@ describe('Solver restart ordering and retained state', () => {
     const expr = and(or('y', 'z'), or('y', not('z')), or(not('y'), not('z')), gadgets(2));
     const base = compile(expr);
     const solver = new CheckedSolver(base, {
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       variablePriority: (unassigned, assignments) =>
         unassigned.includes('y') ? ['y', false] : gadgetPriority(unassigned, assignments),
@@ -568,7 +606,7 @@ describe('Solver restart ordering and retained state', () => {
     const learned = solver.reason[varOf(root[0])];
     assert.ok(learned?.learned);
     assert.deepStrictEqual(learned.lits, [root[0]]);
-    assert.ok(solver.watches.every((list) => !list.includes(learned)));
+    assert.ok(solver.watches.every((list) => !watchesClause(list, learned)));
     assert.strictEqual(solver.level[varOf(root[1])], 0, 'root implication also survives');
     for (const clause of solver.clauses.filter((clause) => clause.learned)) {
       assertEntailed(base, clause);
@@ -588,6 +626,7 @@ describe('Solver restart ordering and retained state', () => {
     const assumptions = { a: Value.TRUE };
     const solver = new CheckedSolver(base, {
       assumptions,
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       variablePriority: (unassigned) => {
         const name = ['x', 'v', 'w'].find((name) => unassigned.includes(name));
@@ -627,6 +666,7 @@ describe('Solver restart ordering and retained state', () => {
     const solver = new CheckedSolver(base, {
       assumptions,
       enablePle: true,
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       variablePriority: gadgetPriority,
     });
@@ -662,6 +702,7 @@ describe('Solver restart ordering and retained state', () => {
     const base = compile(expr);
     assert.ok(base.numVars > base.numNamedVars);
     const solver = new CheckedSolver(base, {
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       variablePriority: (unassigned) => {
         if (unassigned.includes('v')) {
@@ -684,8 +725,12 @@ describe('Solver restart regression and reference gates', () => {
     const gate = PHP_REGRESSIONS.find(({ pigeons, holes }) => pigeons === 8 && holes === 7);
     assert.ok(gate !== undefined);
     assert.strictEqual(gate.maxConflicts, 36_270, 'do not recalibrate the historical hard cap');
+    // The pinned boundary stream below is the Luby schedule at its DEFAULT
+    // base (100): select the internal Luby policy explicitly, leaving the
+    // knob-free EMA default to the dimacs/bench:legacy cap gates.
     const solver = new RestartTraceSolver(compile(cnfToExpr(phpCnf(8, 7))), {
       enablePle: true,
+      restartPolicy: 'luby',
       maxConflicts: gate.maxConflicts,
     });
     // Independent UNSAT witness: eight pigeons cannot occupy seven distinct holes.
@@ -742,6 +787,7 @@ describe('Solver restart regression and reference gates', () => {
               const solver = new CheckedSolver(compile(expr), {
                 assumptions,
                 enablePle,
+                restartPolicy: 'luby',
                 restartBaseConflicts: 1,
                 maxConflicts: 1000,
               });

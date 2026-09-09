@@ -105,6 +105,7 @@ describe('createSolver public lifecycle', () => {
       conflicts: 1,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 1,
     });
     const assumptionSets: VariableAssignments[] = [
       { a: Value.FALSE, x: Value.TRUE },
@@ -199,6 +200,7 @@ describe('createSolver public lifecycle', () => {
       function (this: Solver, ...args: Parameters<Solver['solveAssuming']>) {
         assert.strictEqual(internals(this).enablePle, false);
         assert.strictEqual(internals(this).restartBaseConflicts, 100);
+        assert.strictEqual(internals(this).restartPolicy.kind, 'ema');
         assert.strictEqual(internals(this).learnedClauseReductionThreshold, 10_000);
         assert.strictEqual(internals(this).maxConflicts, undefined);
         return original.apply(this, args);
@@ -210,6 +212,7 @@ describe('createSolver public lifecycle', () => {
       assumptions: { a: Value.TRUE },
       stats: ignoredStats,
       enablePle: true,
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       learnedClauseReductionThreshold: 1,
       maxConflicts: 0,
@@ -239,6 +242,7 @@ describe('incremental MiniSat prefix in the shared decision loop', () => {
       lits: [literal(base, 'x')],
       levels: [3],
       lbd: 1,
+      minimized: 0,
       call: 1,
     });
     assert.deepStrictEqual(
@@ -724,6 +728,7 @@ describe('incremental stats scope and retained database cadence', () => {
     };
     const solver = new IncrementalAudit(base, {
       variablePriority: priority,
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       learnedClauseReductionThreshold: 3,
     });
@@ -746,6 +751,8 @@ describe('incremental stats scope and retained database cadence', () => {
         'conflicts',
         'restarts',
         'learnedClauses',
+        'learnedLiterals',
+        'minimizedLiterals',
       ] as const) {
         expected[key] = solver.stats[key] - before[key];
       }
@@ -791,6 +798,7 @@ describe('incremental stats scope and retained database cadence', () => {
     const expr = gadgets(3);
     let target = 'x0';
     const solver = new Solver(compile(expr), {
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       maxConflicts: 3,
       variablePriority: (unassigned) => {
@@ -876,6 +884,7 @@ describe('retained learning is independently entailed without the exposing assum
       reference,
     );
     const solver = new IncrementalAudit(base, {
+      restartPolicy: 'luby',
       restartBaseConflicts: 1,
       learnedClauseReductionThreshold: 1,
       variablePriority: (unassigned) => (unassigned.includes('x') ? ['x', false] : null),
@@ -911,6 +920,7 @@ describe('retained learning is independently entailed without the exposing assum
       assert.ok(truth.length > 0);
       formulas += 1;
       const solver = new IncrementalAudit(base, {
+        restartPolicy: 'luby',
         restartBaseConflicts: 1,
         learnedClauseReductionThreshold: 1,
       });

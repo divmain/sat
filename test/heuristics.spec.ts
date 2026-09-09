@@ -343,6 +343,8 @@ describe('Solver named-only decision heap', () => {
       restarts: 0,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 1,
+      minimizedLiterals: 0,
     });
     assertHeap(solver);
   });
@@ -611,6 +613,8 @@ describe('Solver fixed-seed reproducibility', () => {
             restarts: 999,
             learnedClauses: 999,
             learnedClausesCurrent: 999,
+            learnedLiterals: 999,
+            minimizedLiterals: 999,
           };
           const model = getSolution(formula, { stats });
           const singleStats = { ...stats };

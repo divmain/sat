@@ -12,6 +12,7 @@ import {
   mulberry32,
   randomFormula,
   referenceModels,
+  watchesClause,
 } from './helpers';
 
 function clause(lits: number[]): Clause {
@@ -37,6 +38,8 @@ function stats(): SolverStats {
     restarts: 0,
     learnedClauses: 0,
     learnedClausesCurrent: 0,
+    learnedLiterals: 0,
+    minimizedLiterals: 0,
   };
 }
 
@@ -189,23 +192,59 @@ describe('Solver unit propagation', () => {
 describe('Solver two-watched-literal propagation', () => {
   // The watch invariant after ANY solver activity: every clause of length >= 2
   // appears in exactly two watch lists — those of its lits[0]/lits[1] slots —
-  // and units/empty clauses are never watched at all.
+  // and units/empty clauses are never watched at all. Long clauses (3+) occupy
+  // the blocker-entry lists (each entry's blocker is the clause's current
+  // OTHER watch, cross-checked against the twin); binary clauses occupy the
+  // dedicated binary lists (each entry's `other` is the opposite literal).
   function assertWatchInvariant(solver: Solver): void {
     for (const clause of solver.clauses) {
       const memberships = solver.watches.reduce(
-        (count, list) => (list.includes(clause) ? count + 1 : count),
+        (count, list) => (watchesClause(list, clause) ? count + 1 : count),
+        0,
+      );
+      const binaryMemberships = solver.binaryWatches.reduce(
+        (count, list) => (list.some((entry) => entry.clause === clause) ? count + 1 : count),
         0,
       );
       if (clause.lits.length < 2) {
         assert.strictEqual(memberships, 0, 'units and the empty clause are never watched');
+        assert.strictEqual(binaryMemberships, 0, 'units and the empty clause are never watched');
+      } else if (clause.lits.length === 2) {
+        assert.strictEqual(memberships, 0, 'binary clauses live on the dedicated lists');
+        assert.strictEqual(
+          binaryMemberships,
+          2,
+          `binary clause [${clause.lits.join(' ')}] must watch exactly two literals`,
+        );
+        for (const [slot, otherSlot] of [
+          [0, 1],
+          [1, 0],
+        ] as const) {
+          const entry = solver.binaryWatches[clause.lits[slot]].find(
+            (candidate) => candidate.clause === clause,
+          );
+          assert.ok(entry !== undefined);
+          assert.strictEqual(entry.other, clause.lits[otherSlot], 'binary entry other literal');
+        }
       } else {
+        assert.strictEqual(binaryMemberships, 0, 'long clauses never occupy the binary lists');
         assert.strictEqual(
           memberships,
           2,
           `clause [${clause.lits.join(' ')}] must watch exactly two literals`,
         );
-        assert.ok(solver.watches[clause.lits[0]].includes(clause));
-        assert.ok(solver.watches[clause.lits[1]].includes(clause));
+        for (const [slot, otherSlot] of [
+          [0, 1],
+          [1, 0],
+        ] as const) {
+          const entry = solver.watches[clause.lits[slot]].find(
+            (candidate) => candidate.clause === clause,
+          );
+          assert.ok(entry !== undefined);
+          assert.strictEqual(entry.blocker, clause.lits[otherSlot], 'blocker is the other watch');
+          assert.strictEqual(entry.twin?.clause, clause, 'twin refers to the same clause');
+          assert.strictEqual(entry.twin?.twin, entry, 'twin link is symmetric');
+        }
       }
     }
   }
@@ -215,20 +254,20 @@ describe('Solver two-watched-literal propagation', () => {
     const unitC = clause([negLit(3)]);
     const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'x'], [C, unitC]));
 
-    assert.ok(solver.watches[posLit(0)].includes(C));
-    assert.ok(solver.watches[posLit(1)].includes(C));
-    assert.ok(!solver.watches[posLit(2)].includes(C));
+    assert.ok(watchesClause(solver.watches[posLit(0)], C));
+    assert.ok(watchesClause(solver.watches[posLit(1)], C));
+    assert.ok(!watchesClause(solver.watches[posLit(2)], C));
     // The unit is asserted at level zero instead of being watched.
     assert.strictEqual(solver.reason[3], unitC);
-    assert.ok(!solver.watches[posLit(3)].includes(unitC));
+    assert.ok(!watchesClause(solver.watches[posLit(3)], unitC));
     assertWatchInvariant(solver);
   });
 
   it('relocates a watch to a live third literal, removing it from the falsified list', () => {
     const C = clause([posLit(0), posLit(1), posLit(2)]);
     const solver = new Solver(handBuiltCnf(['a', 'b', 'c'], [C]));
-    assert.ok(solver.watches[posLit(0)].includes(C));
-    assert.ok(solver.watches[posLit(1)].includes(C));
+    assert.ok(watchesClause(solver.watches[posLit(0)], C));
+    assert.ok(watchesClause(solver.watches[posLit(1)], C));
 
     solver.newDecisionLevel();
     assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE
@@ -237,9 +276,22 @@ describe('Solver two-watched-literal propagation', () => {
     // In-place swap: the falsified a moved out of the watched slots, the live
     // c took slot 1, and the watch on a was replaced by a watch on c.
     assert.deepEqual(C.lits, [posLit(1), posLit(2), posLit(0)]);
-    assert.ok(!solver.watches[posLit(0)].includes(C), 'the falsified literal loses the watch');
-    assert.ok(solver.watches[posLit(1)].includes(C));
-    assert.ok(solver.watches[posLit(2)].includes(C), 'the live third literal gains the watch');
+    assert.ok(
+      !watchesClause(solver.watches[posLit(0)], C),
+      'the falsified literal loses the watch',
+    );
+    assert.ok(watchesClause(solver.watches[posLit(1)], C));
+    assert.ok(
+      watchesClause(solver.watches[posLit(2)], C),
+      'the live third literal gains the watch',
+    );
+    // Both blockers track the relocation: from the c list the other watch is
+    // b, and from the b list the other watch is now c (twin kept in step).
+    const fromC = solver.watches[posLit(2)].find((entry) => entry.clause === C);
+    const fromB = solver.watches[posLit(1)].find((entry) => entry.clause === C);
+    assert.strictEqual(fromC?.blocker, posLit(1));
+    assert.strictEqual(fromB?.blocker, posLit(2));
+    assert.strictEqual(fromC?.twin, fromB);
     assertWatchInvariant(solver);
   });
 
@@ -300,7 +352,9 @@ describe('Solver two-watched-literal propagation', () => {
     const C2 = clause([posLit(0), posLit(2)]);
     const C3 = clause([posLit(0), posLit(3)]);
     const solver = new Solver(handBuiltCnf(['a', 'b', 'c', 'x'], [C1, C2, C3]));
-    assert.strictEqual(solver.watches[posLit(0)].length, 3);
+    // Binary clauses live on the dedicated implicit-propagation lists.
+    assert.strictEqual(solver.binaryWatches[posLit(0)].length, 3);
+    assert.strictEqual(solver.watches[posLit(0)].length, 0);
 
     solver.newDecisionLevel();
     assert.strictEqual(solver.enqueue(negLit(0), null), true); // a = FALSE
@@ -311,7 +365,11 @@ describe('Solver two-watched-literal propagation', () => {
     assert.strictEqual(solver.reason[1], C1);
     assert.strictEqual(solver.reason[2], C2);
     assert.strictEqual(solver.reason[3], C3);
-    assert.strictEqual(solver.watches[posLit(0)].length, 3, 'unit clauses keep their watches');
+    assert.strictEqual(
+      solver.binaryWatches[posLit(0)].length,
+      3,
+      'unit clauses keep their watches',
+    );
     assertWatchInvariant(solver);
   });
 
@@ -586,6 +644,8 @@ describe('Solver CDCL search loop', () => {
       restarts: 0,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 1,
+      minimizedLiterals: 0,
     });
     const learned = solver.reason[0];
     assert.ok(learned !== null);
@@ -595,7 +655,7 @@ describe('Solver CDCL search loop', () => {
     assert.strictEqual(solver.level[0], 0);
     assert.strictEqual(solver.level[1], 0);
     assert.ok(
-      solver.watches.every((list) => !list.includes(learned)),
+      solver.watches.every((list) => !watchesClause(list, learned)),
       'units are never watched',
     );
   });
@@ -626,6 +686,8 @@ describe('Solver CDCL search loop', () => {
       restarts: 0,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 1,
+      minimizedLiterals: 0,
     });
     assert.strictEqual(solver.trailLim.length, 0);
   });

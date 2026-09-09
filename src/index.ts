@@ -54,6 +54,8 @@ const zeroStats = (stats: SolverStats): void => {
   stats.restarts = 0;
   stats.learnedClauses = 0;
   stats.learnedClausesCurrent = 0;
+  stats.learnedLiterals = 0;
+  stats.minimizedLiterals = 0;
 };
 
 /**

@@ -25,6 +25,8 @@ const statNames = [
   'restarts',
   'learnedClauses',
   'learnedClausesCurrent',
+  'learnedLiterals',
+  'minimizedLiterals',
 ];
 const counters = (value = 0) => Object.fromEntries(statNames.map((name) => [name, value]));
 

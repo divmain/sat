@@ -1,12 +1,18 @@
-// Assert-only legacy benchmark verifier (npm run bench / npm run bench:legacy),
-// not a speedup gate. Authenticate the frozen Phase-1/2/3 references plus the
-// Phase-4 record, its markdown, and the release manifest at the release commit,
-// including every embedded Phase-4 source fingerprint against those Git bytes;
-// never read or write the frozen working-tree artifacts. Re-run all 8 fixtures
-// and write nothing. Parity mode (default until clause minimization) hard-fails
-// unless all 48 counters exactly equal the frozen Phase-4 record; gates mode
-// keeps the same authentication/verdict/oracle/cap checks and prints non-fatal
-// counter deltas. Budget errors propagate as failures, never UNSAT records.
+// Assert-only legacy benchmark verifier (npm run bench:legacy), not a speedup
+// gate. Authenticate the frozen Phase-1/2/3 references plus the Phase-4 record,
+// its markdown, and the release manifest at the release commit, including every
+// embedded Phase-4 source fingerprint against those Git bytes; never read or
+// write the frozen working-tree artifacts. Re-run all 8 fixtures and write
+// nothing. Gates mode (the permanent default since learned-clause
+// minimization landed) keeps the authentication/verdict/oracle/cap checks and
+// prints non-fatal counter deltas; parity mode (--parity) hard-fails unless
+// all 48 counters exactly equal the frozen Phase-4 record, retained for
+// explicit parity experiments. Budget errors propagate as failures, never
+// UNSAT records.
+// Both modes also compare the current compiler's COMPLETE canonical compiled
+// snapshot (normalized clauses, numVars, the named index/name mapping, and
+// levelZeroUnsat — a clause-only check would miss a lost named universe)
+// against the authenticated pristine-v2 snapshots in test/legacy-compiled-cnf.json.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -17,7 +23,11 @@ import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import type { compile } from '../src/compile.js';
 import type { Solver } from '../src/solver.js';
-import type { benchmarkFixtures } from './bench-comparison.js';
+import type { benchmarkFixtures, BenchmarkFixture } from './bench-comparison.js';
+import { compiledSnapshot, digest } from './bench-evidence.js';
+import type { CompiledSnapshot } from './bench-evidence.js';
+import { loadLegacyCompiledCnf, selectEnvironment } from './bench-v3-references.js';
+import type { LegacyFixtureRecord } from './bench-v3-references.js';
 
 const ROOT_URL = new URL('../', import.meta.url);
 
@@ -56,6 +66,43 @@ export const sourceSnapshot = () =>
 
 export type VerifyMode = 'parity' | 'gates';
 
+// The complete compiled-snapshot gate: the current compiler's canonical
+// snapshot for each legacy fixture must equal the authenticated pristine-v2
+// reference byte-for-byte in content (digest) and structure (deep equal). The
+// reference was captured before any compiler-changing work; this gate is what
+// makes later compiler sharing/flattening prove output preservation.
+export function assertLegacyCompiledSnapshot(
+  fixture: BenchmarkFixture,
+  snapshot: CompiledSnapshot,
+  record: LegacyFixtureRecord,
+): void {
+  assert.equal(
+    record.inputSha256,
+    fixture.fixtureSha256,
+    `${fixture.name}: legacy compiled-snapshot input identity disagrees with the pinned fixture`,
+  );
+  assert.equal(
+    record.cap,
+    fixture.maxConflicts,
+    `${fixture.name}: legacy compiled-snapshot cap disagrees with the pinned fixture`,
+  );
+  assert.deepEqual(
+    record.assumptions,
+    Object.entries(fixture.assumptions),
+    `${fixture.name}: legacy compiled-snapshot assumptions disagree with the pinned fixture`,
+  );
+  assert.equal(
+    digest(snapshot),
+    record.compiledSha256,
+    `${fixture.name}: compiled snapshot digest mismatch — compiler output (including numVars, the named index/name universe, normalized clauses, or levelZeroUnsat) changed`,
+  );
+  assert.deepEqual(
+    snapshot,
+    record.snapshot,
+    `${fixture.name}: complete compiled snapshot mismatch against the pristine v2 reference`,
+  );
+}
+
 // Injection keeps tests on this exact orchestration/validation path. The CLI
 // always uses real Git, snapshots, modules, and fixtures. Verify mode writes
 // nothing: there is no artifact-writing path reachable from npm scripts.
@@ -77,7 +124,7 @@ export async function runBenchmark({
     return { compile, Solver };
   },
   fixtures: makeFixtures,
-  mode = 'parity',
+  mode = 'gates',
   log = console.log,
 }: BenchmarkOptions = {}): Promise<void> {
   const sources = snapshotSources();
@@ -95,6 +142,14 @@ export async function runBenchmark({
   } = await import('./bench-comparison.js');
   const references = loadReferences(readGit);
   const phase4 = loadPhase4Record(readGit, references);
+  // The pristine-v2 complete compiled snapshots, authenticated from their own
+  // pinned artifact commit exactly like the frozen phase references above.
+  const legacyCompiled = loadLegacyCompiledCnf(readGit);
+  const legacyEnvironment = selectEnvironment(
+    legacyCompiled.environments,
+    process.env.SAT_DEBUG === '1',
+    'legacy compiled snapshots',
+  );
   const { compile, Solver } = await loadSolver();
   assertSourcesUnchanged(sources, snapshotSources());
   const fixtures = (makeFixtures ?? benchmarkFixtures)();
@@ -113,18 +168,32 @@ export async function runBenchmark({
   };
   verifyInputs();
 
+  // Complete-snapshot coverage: exactly the 8 pinned legacy fixtures, by name.
+  const legacyByName = new Map(
+    legacyEnvironment.fixtures.map((record) => [record.id, record] as const),
+  );
+  assert.deepEqual(
+    legacyEnvironment.fixtures.map((record) => record.id).sort(),
+    fixtures.map(({ fixture }) => fixture.name).sort(),
+    'legacy compiled-snapshot fixture coverage disagreement',
+  );
+
   // Current HEAD and Node version are context only, never implementation identity.
   const head = readGit(['rev-parse', 'HEAD']).toString('utf8').trim();
   log(
-    `Legacy Phase-4 benchmark verifier (${mode} mode; assert-only, writes nothing).\n` +
-      `Frozen Phase-4 record: ${PHASE4_REFERENCE.commit}:${PHASE4_REFERENCE.path}\n` +
-      `Current HEAD (context, not implementation identity): ${head}; Node ${process.version}\n`,
+    `Legacy Phase-4 benchmark verifier (${mode} mode; assert-only, writes nothing).\nFrozen Phase-4 record: ${PHASE4_REFERENCE.commit}:${PHASE4_REFERENCE.path}\nComplete compiled snapshots: authenticated pristine-v2 reference, compared per fixture.\nCurrent HEAD (context, not implementation identity): ${head}; Node ${process.version}\n`,
   );
   const results = fixtures.map(({ expr, fixture }) => {
     const recorded = phase4.entries.find(({ name }) => name === fixture.name);
     assert.ok(recorded, `Missing frozen Phase-4 record instance: ${fixture.name}`);
+    const legacyRecord = legacyByName.get(fixture.name);
+    assert.ok(legacyRecord, `Missing legacy compiled-snapshot fixture: ${fixture.name}`);
     const start = performance.now();
-    const solver = new Solver(compile(expr), {
+    const cnf = compile(expr);
+    // Snapshot before Solver construction: the complete canonical compiled
+    // snapshot is a compiler-output gate, independent of the search below.
+    assertLegacyCompiledSnapshot(fixture, compiledSnapshot(cnf), legacyRecord);
+    const solver = new Solver(cnf, {
       // Keep validation assumptions independent of any mutation by the solver.
       assumptions: { ...fixture.assumptions },
       enablePle: true,
@@ -222,5 +291,5 @@ export async function runBenchmark({
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  await runBenchmark({ mode: process.argv.includes('--gates') ? 'gates' : 'parity' });
+  await runBenchmark({ mode: process.argv.includes('--parity') ? 'parity' : 'gates' });
 }

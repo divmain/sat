@@ -6,6 +6,8 @@ import assert from 'node:assert';
 import { isDeepStrictEqual } from 'node:util';
 import { and, getVariables, implies, isVariable, not, or, Value, xor } from '../src/expr.js';
 import type { BooleanExpr, Variable, VariableAssignments } from '../src/expr.js';
+import type { Clause } from '../src/compile.js';
+import type { BinaryWatchEntry, WatchEntry } from '../src/solver.js';
 
 // Reference evaluator over the BooleanExpr AST, independent of the CNF solver.
 // Requires total numeric assignments; invalid variable reads fail loudly.
@@ -95,6 +97,64 @@ export function assertModelShape(model: VariableAssignments, expr: BooleanExpr):
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Watch-entry observation (long-clause lists hold { clause, blocker, twin }
+// entries; binary lists hold { clause, other } entries)
+// ---------------------------------------------------------------------------
+
+// Entry-era form of `list.includes(clause)`: does this watch list's entries
+// contain the clause?
+export function watchesClause(list: readonly WatchEntry[], clause: Clause): boolean {
+  return list.some((entry) => entry.clause === clause);
+}
+
+// Structural snapshot of the watch lists for cancellation-survival
+// assertions: entry object identity and cached payload per position, so a
+// rebuilt list, a permuted entry, or a silently stale blocker/other literal
+// is caught (a plain deep-equal over the entry objects would degenerate to
+// identity here, because snapshot and live list share the same entry
+// references). Covers BOTH the long-clause and the dedicated binary lists.
+export interface WatchListSnapshot {
+  readonly entries: readonly { readonly entry: object; readonly payload: number }[];
+}
+
+export function snapshotWatches(
+  watches: readonly WatchEntry[][],
+  binaryWatches: readonly BinaryWatchEntry[][],
+): WatchListSnapshot[] {
+  const longLists = watches.map((list) => ({
+    entries: list.map((entry) => ({ entry, payload: entry.blocker })),
+  }));
+  const binaryLists = binaryWatches.map((list) => ({
+    entries: list.map((entry) => ({ entry, payload: entry.other })),
+  }));
+  return [...longLists, ...binaryLists];
+}
+
+export function assertWatchListsSurvive(
+  watches: readonly WatchEntry[][],
+  binaryWatches: readonly BinaryWatchEntry[][],
+  snapshot: readonly WatchListSnapshot[],
+  message: string,
+): void {
+  const combined = [...watches, ...binaryWatches];
+  assert.strictEqual(combined.length, snapshot.length, message);
+  for (let lit = 0; lit < combined.length; lit += 1) {
+    const list = combined[lit];
+    const expected = snapshot[lit]?.entries;
+    assert.ok(list !== undefined && expected !== undefined, message);
+    assert.strictEqual(list.length, expected.length, message);
+    for (let index = 0; index < list.length; index += 1) {
+      assert.strictEqual(list[index], expected[index]?.entry, message);
+      const payload = list[index] !== undefined ? entryPayload(list[index]) : undefined;
+      assert.strictEqual(payload, expected[index]?.payload, message);
+    }
+  }
+}
+
+const entryPayload = (entry: WatchEntry | BinaryWatchEntry): number =>
+  'blocker' in entry ? entry.blocker : entry.other;
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness

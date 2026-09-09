@@ -6,8 +6,13 @@ import type { Clause, CompiledCnf } from '../src/compile.js';
 import { Value } from '../src/expr.js';
 import type { BooleanExpr, VariableAssignments } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
-import type { SolverStats } from '../src/solver.js';
-import { assertModelShape, expressionValue } from './helpers.js';
+import type { RestartPolicy, SolverStats } from '../src/solver.js';
+import {
+  assertModelShape,
+  assertWatchListsSurvive,
+  expressionValue,
+  snapshotWatches,
+} from './helpers.js';
 
 export const counters = (value = 0): SolverStats => ({
   decisions: value,
@@ -16,6 +21,8 @@ export const counters = (value = 0): SolverStats => ({
   restarts: value,
   learnedClauses: value,
   learnedClausesCurrent: value,
+  learnedLiterals: value,
+  minimizedLiterals: value,
 });
 
 export interface Internals {
@@ -29,8 +36,17 @@ export interface Internals {
   readonly incrementalCallActive: boolean;
   readonly enablePle: boolean;
   readonly restartBaseConflicts: number;
+  readonly restartPolicy: RestartPolicy;
   readonly learnedClauseReductionThreshold: number;
   readonly maxConflicts: number | undefined;
+  readonly propagationCursor: {
+    event: number;
+    falseLit: number;
+    phase: 'binary' | 'long';
+    nextWatch: number;
+  } | null;
+  readonly scheduling: { quantum: number; remaining: number } | null;
+  readonly searchState: { phase: 'startup' | 'search' | 'prefix' } | null;
 }
 
 export const internals = (solver: Solver): Internals => solver as unknown as Internals;
@@ -150,6 +166,7 @@ export function assertRoot(solver: Solver): void {
 
 function assertFixpoint(solver: Solver): void {
   assert.strictEqual(solver.qhead, solver.trail.length);
+  assert.strictEqual(internals(solver).propagationCursor, null, 'no partially scanned event');
   for (const clause of solver.clauses) {
     const values = clause.lits.map((lit) => litValue(lit, solver.assigns));
     assert.ok(
@@ -210,6 +227,8 @@ export class IncrementalAudit extends Solver {
     lits: number[];
     levels: number[];
     lbd: number;
+    // Literals recursive minimization removed from this clause before lbd.
+    minimized: number;
     call: number;
   }> = [];
   readonly cancellations: Array<{
@@ -291,9 +310,26 @@ export class IncrementalAudit extends Solver {
   }
 
   override analyze(conflict: Clause): { learned: Clause; backjumpLevel: number } {
+    const producedBefore = this.stats.learnedLiterals;
+    const minimizedBefore = this.stats.minimizedLiterals;
     const result = super.analyze(conflict);
     const levels = result.learned.lits.map((lit) => this.level[varOf(lit)]);
-    assert.strictEqual(result.learned.lbd, new Set(levels).size);
+    assert.strictEqual(
+      result.learned.lbd,
+      new Set(levels.filter((level) => level !== 0)).size,
+      'learning-time distinct nonzero levels of the minimized clause',
+    );
+    const produced = this.stats.learnedLiterals - producedBefore;
+    const minimized = this.stats.minimizedLiterals - minimizedBefore;
+    assert.strictEqual(
+      produced,
+      result.learned.lits.length,
+      'learnedLiterals counts post-minimization literals per analysis',
+    );
+    assert.ok(
+      minimized >= 0 && produced >= 1,
+      'minimization only removes; the asserting literal always survives',
+    );
     this.verifyLearned?.(result.learned);
     this.analyses.push({
       from: this.trailLim.length,
@@ -301,6 +337,7 @@ export class IncrementalAudit extends Solver {
       lits: [...result.learned.lits],
       levels,
       lbd: result.learned.lbd,
+      minimized,
       call: this.calls,
     });
     this.backjumpPending = true;
@@ -324,27 +361,36 @@ export class IncrementalAudit extends Solver {
     const from = this.trailLim.length;
     const before = [...this.clauses];
     const metadata = before.map((clause) => ({ ...clause, lits: [...clause.lits] }));
-    const watches = this.watches.map((list) => [...list]);
+    // Entry-era snapshot: entry identity + blocker per position (a raw
+    // deep-equal over shared entry references would degenerate).
+    const watches = snapshotWatches(this.watches, this.binaryWatches);
     const activity = this.activity.slice();
     const phases = this.polarity.slice();
     const increment = internals(this).varInc;
     const root = this.trail.filter((lit) => this.level[varOf(lit)] === 0);
     const reasons = root.map((lit) => this.reason[varOf(lit)]);
     const qhead = this.qhead;
+    const pendingEvent = internals(this).propagationCursor?.event ?? qhead;
     super.cancelUntil(target);
     assert.strictEqual(this.clauses.length, before.length);
     for (const [index, clause] of before.entries()) {
       assert.strictEqual(this.clauses[index], clause, 'retain canonical identity');
       assert.deepStrictEqual(clause, metadata[index]);
     }
-    assert.deepStrictEqual(this.watches, watches, 'cancellation does not rebuild watches');
+    assertWatchListsSurvive(
+      this.watches,
+      this.binaryWatches,
+      watches,
+      'cancellation does not rebuild watches',
+    );
     assert.deepStrictEqual(this.activity, activity);
     assert.deepStrictEqual(this.polarity, phases);
     assert.strictEqual(internals(this).varInc, increment);
     assert.deepStrictEqual(this.trail.slice(0, root.length), root);
     for (const [index, lit] of root.entries())
       assert.strictEqual(this.reason[varOf(lit)], reasons[index]);
-    assert.strictEqual(this.qhead, Math.min(qhead, this.trail.length));
+    assert.strictEqual(this.qhead, Math.min(qhead, pendingEvent, this.trail.length));
+    assert.strictEqual(internals(this).propagationCursor, null, 'partial scans requeued or undone');
     assertHeap(this);
     assertReasons(this);
     this.checkInvariants();
@@ -390,6 +436,12 @@ export class IncrementalAudit extends Solver {
         this.cancellations.filter((e) => e.kind === 'restart' && e.from > 0).length,
       learnedClauses: this.initialStats.learnedClauses + this.admissions.length,
       learnedClausesCurrent: this.clauses.filter((clause) => clause.learned).length,
+      learnedLiterals:
+        this.initialStats.learnedLiterals +
+        this.analyses.reduce((sum, analysis) => sum + analysis.lits.length, 0),
+      minimizedLiterals:
+        this.initialStats.minimizedLiterals +
+        this.analyses.reduce((sum, analysis) => sum + analysis.minimized, 0),
     });
     assert.strictEqual(
       this.stats.learnedClausesCurrent,

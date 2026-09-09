@@ -189,6 +189,8 @@ describe('end-to-end DIMACS verdicts', () => {
       restarts: 0,
       learnedClauses: 0,
       learnedClausesCurrent: 0,
+      learnedLiterals: 0,
+      minimizedLiterals: 0,
     };
     assert.strictEqual(getSolution(throughDimacs(phpCnf(6, 5)), { stats }), null);
     assert.ok(stats.learnedClauses > 0, 'learning, not merely conflicts, distinguishes CDCL');

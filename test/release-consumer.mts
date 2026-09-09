@@ -19,6 +19,8 @@ const stats: SolverStats = {
   restarts: 0,
   learnedClauses: 0,
   learnedClausesCurrent: 0,
+  learnedLiterals: 0,
+  minimizedLiterals: 0,
 };
 const priority: VariablePriority = (unassigned, partial) => {
   const first = unassigned[0];
@@ -89,7 +91,7 @@ function rejectedContracts(): void {
   solver.solve({ typed: true });
   // @ts-expect-error Polarity is boolean, not numeric Value.
   sat.getSolution(expr, { variablePriority: () => ['typed', sat.Value.TRUE] });
-  // @ts-expect-error The stats out-parameter requires all six writable fields.
+  // @ts-expect-error The stats out-parameter requires all eight writable fields.
   sat.getSolution(expr, { stats: { decisions: 0 } });
   // @ts-expect-error Constructors are required at solving entry points.
   sat.getSolution('typed');

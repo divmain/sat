@@ -285,6 +285,178 @@ describe('compile — normalization edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sharing, flattening, and folding
+// ---------------------------------------------------------------------------
+
+// Compact structural snapshot of a CompiledCnf for handle-immutability and
+// mutation-observation assertions (not the benchmark canonical form).
+const cnfSnapshot = (cnf: CompiledCnf): string =>
+  JSON.stringify({
+    numVars: cnf.numVars,
+    numNamedVars: cnf.numNamedVars,
+    indexToName: cnf.indexToName,
+    clauses: cnf.clauses.map((clause) => clause.lits),
+    levelZeroUnsat: cnf.levelZeroUnsat,
+  });
+
+describe('compile — sharing, flattening, and folding', () => {
+  it('compiles a left-deep xor chain with linearly bounded size (shared subtrees visited once)', () => {
+    // xor(x, y) = or(and(x, not(y)), and(not(x), y)) duplicates both operand
+    // identities, so an unshared traversal of a left-deep chain visits
+    // 3·2^(n-1)-2 leaves (and allocated exponentially many aux variables
+    // before sharing landed). Identity memoization plus hash-consing visit
+    // each object once: every level needs at most three gates (two and, one
+    // or). Bounded shape only — never an exact aux count on consed inputs.
+    const length = 12;
+    const width = String(length).length;
+    const nameOf = (index: number) => `v${String(index).padStart(width, '0')}`;
+    let expr = xor(nameOf(1), nameOf(2));
+    for (let index = 3; index <= length; index += 1) {
+      expr = xor(expr, nameOf(index));
+    }
+    const cnf = compile(expr);
+    assertWellFormed(cnf);
+    assert.strictEqual(cnf.numNamedVars, length);
+    assert.ok(
+      cnf.numVars <= 4 * length,
+      `aux population stays linear in the chain length (got ${cnf.numVars} for ${length} named)`,
+    );
+  });
+
+  it('agrees with the reference evaluator on a shared xor chain over all named assignments', () => {
+    const length = 8;
+    const width = String(length).length;
+    const nameOf = (index: number) => `v${String(index).padStart(width, '0')}`;
+    let expr = xor(nameOf(1), nameOf(2));
+    for (let index = 3; index <= length; index += 1) {
+      expr = xor(expr, nameOf(index));
+    }
+    assertAgreement(expr);
+  });
+
+  it('shares one gate set across structurally identical occurrences', () => {
+    // Distinct objects, identical structure: hash-consing (key = node kind +
+    // ordered flattened child keys) interns them to one canonical node.
+    const fresh = () => or(and('a', 'b'), 'c');
+    const twice = compile(and(fresh(), fresh()));
+    const fourTimes = compile(and(fresh(), fresh(), fresh(), fresh()));
+    assertWellFormed(twice);
+    assertWellFormed(fourTimes);
+    assert.strictEqual(twice.numNamedVars, 3);
+    // Repeating the occurrence four times cannot grow the gate population:
+    // the shared structure is compiled once. A bound, never an exact count.
+    assert.ok(
+      fourTimes.numVars <= twice.numVars,
+      `occurrences share gates (two: ${twice.numVars}, four: ${fourTimes.numVars})`,
+    );
+    assertAgreement(and(fresh(), fresh(), fresh(), fresh()));
+  });
+
+  it('preserves operand order and multiplicity in consing keys', () => {
+    // or(and(a,b),c) and or(and(b,a),c) differ only in operand order; both
+    // compile correctly and neither is required to share the other's gates.
+    assertAgreement(or(and('a', 'b'), 'c'));
+    assertAgreement(or(and('b', 'a'), 'c'));
+    // Multiplicity is preserved: and('a','a') in non-conjunctive position is
+    // gated like any other two-operand conjunction, not collapsed to 'a'.
+    const cnf = compile(or(and('a', 'a'), 'b'));
+    assertWellFormed(cnf);
+    assertAgreement(or(and('a', 'a'), 'b'));
+  });
+
+  it('keeps folded-away variables in the named universe', () => {
+    // or('x', and()) folds to true (the and() operand is the identity for
+    // or), so the whole conjunct vanishes; 'x' still belongs to the named
+    // universe and therefore to complete models.
+    const cnf = compile(and(or('x', and()), 'b'));
+    assertWellFormed(cnf);
+    assert.deepEqual(
+      cnf.indexToName,
+      ['b', 'x'],
+      "the folded-away 'x' stays in the named universe",
+    );
+    assert.strictEqual(cnf.numVars, cnf.numNamedVars, 'a folded conjunct allocates no aux');
+    assert.deepEqual(
+      cnf.clauses.map((clause) => clause.lits),
+      [[posLit(indexOf(cnf, 'b'))]],
+      'only the surviving conjunct emits a clause',
+    );
+    assert.strictEqual(cnf.levelZeroUnsat, false);
+  });
+
+  it('folds a false root to the empty clause without dropping the universe', () => {
+    const cnf = compile(and('a', or()));
+    assertWellFormed(cnf);
+    assert.strictEqual(cnf.levelZeroUnsat, true);
+    assert.deepEqual(cnf.indexToName, ['a'], "'a' stays in the named universe");
+    assert.deepEqual(
+      cnf.clauses.map((clause) => clause.lits),
+      [[]],
+    );
+  });
+
+  it('folds negated constants in both directions', () => {
+    const contradiction = compile(and(not(and()), 'b'));
+    assertWellFormed(contradiction);
+    assert.strictEqual(contradiction.levelZeroUnsat, true);
+    assert.deepEqual(contradiction.indexToName, ['b']);
+    const tautology = compile(and(not(or()), 'b'));
+    assertWellFormed(tautology);
+    assert.strictEqual(tautology.levelZeroUnsat, false);
+    assert.deepEqual(
+      tautology.clauses.map((clause) => clause.lits),
+      [[posLit(indexOf(tautology, 'b'))]],
+    );
+  });
+
+  it('observes caller mutations between compilations and never alters earlier handles', () => {
+    // Caches are compilation-scoped and canonical forms are compiler-owned:
+    // editing a shared caller AST is observed by the NEXT compilation, while
+    // previously returned handles are frozen snapshots of their own compile.
+    const shared = and('a', 'b');
+    if (!('and' in shared)) {
+      throw new Error('and() must produce an and-node');
+    }
+    const expr = or(shared, 'c');
+    const first = compile(expr);
+    const firstSnapshot = cnfSnapshot(first);
+    shared.and.push(not('c'));
+    const second = compile(expr);
+    assertWellFormed(second);
+    assert.strictEqual(cnfSnapshot(first), firstSnapshot, 'earlier handle is unchanged');
+    assert.notStrictEqual(
+      cnfSnapshot(second),
+      firstSnapshot,
+      'the second compilation observes the edited AST',
+    );
+    assertAgreement(expr);
+  });
+
+  it('refutes invalid total named assignments by propagation (ordinary invalid-model regression)', () => {
+    // For or(and('a','b'), and('c','d')), the invalid total named assignment
+    // a=TRUE, b=FALSE, c=TRUE, d=FALSE is refuted at the propagation
+    // fixpoint under the bidirectional gate clauses: b=FALSE forces the first
+    // and-gate false, d=FALSE forces the second and-gate false, and the
+    // asserted root or-gate clause is then falsified. This is an ordinary
+    // invalid-model regression for the established encoding: extension
+    // correctness plus propagation refutation hold for every total named
+    // assignment (assertAgreement below covers all sixteen). It neither
+    // relies on nor claims anything about Plaisted-Greenbaum one-sided gates
+    // — the proposed PG clauses refute this same assignment — and PG remains
+    // a deferred scope decision (Design § Compiler), not a disproven one.
+    const expr = or(and('a', 'b'), and('c', 'd'));
+    const cnf = compile(expr);
+    assertWellFormed(cnf);
+    assert.strictEqual(
+      cnfSatisfiedUnder(cnf, { a: Value.TRUE, b: Value.FALSE, c: Value.TRUE, d: Value.FALSE }),
+      false,
+      'the invalid total named assignment is propagation-refuted',
+    );
+    assertAgreement(expr);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Semantic agreement with the reference evaluator (fixed corpus)
 // ---------------------------------------------------------------------------
 
@@ -318,6 +490,26 @@ const AGREEMENT_CORPUS: Array<[string, BooleanExpr]> = [
   ["and('a', 'a')", and('a', 'a')],
   ['and()', and()],
   ['or()', or()],
+  // Flattening and constant folding edge cases (folded variables stay in the
+  // named universe — see the folded-universe tests below).
+  ["and('a', and('b', 'c')) flattens", and('a', and('b', 'c'))],
+  ["or('a', or('b', 'c')) flattens", or('a', or('b', 'c'))],
+  ["or('a', and()) folds to true", or('a', and())],
+  ["and('a', or()) folds to false", and('a', or())],
+  ['not(and()) folds to false', not(and())],
+  ['not(or()) folds to true', not(or())],
+  // Identity-shared and structurally shared subtrees.
+  [
+    'identity-shared subtree',
+    (() => {
+      const shared = xor('a', 'b');
+      return and(implies('c', shared), or(shared, 'd'));
+    })(),
+  ],
+  [
+    'structurally shared subtree (distinct objects)',
+    and(or(and('a', 'b'), 'c'), or(and('a', 'b'), 'c')),
+  ],
 ];
 
 describe('compile — fixed corpus agreement with the reference evaluator', () => {

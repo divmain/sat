@@ -29,7 +29,7 @@
   "homepage": "https://github.com/divmain/sat#readme",
   "bugs": "https://github.com/divmain/sat/issues",
   "scripts": {
-    "bench": "tsx ./test/bench.ts",
+    "bench": "tsx ./test/bench-v3.ts",
     "bench:legacy": "tsx ./test/bench.ts",
     "build": "tsc",
     "check": "biome check ./src ./test",

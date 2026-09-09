@@ -31,6 +31,7 @@ const WORK_KEYS = ['decisions', 'propagations', 'conflicts', 'restarts', 'learne
 interface Variant {
   label: string;
   knobs?: {
+    restartPolicy: 'luby';
     restartBaseConflicts: number;
     learnedClauseReductionThreshold: number;
   };
@@ -39,12 +40,12 @@ interface Variant {
 const VARIANTS: Variant[] = [
   { label: 'public createSolver defaults' },
   {
-    label: 'internal base1 / reduction1',
-    knobs: { restartBaseConflicts: 1, learnedClauseReductionThreshold: 1 },
+    label: 'internal luby base1 / reduction1',
+    knobs: { restartPolicy: 'luby', restartBaseConflicts: 1, learnedClauseReductionThreshold: 1 },
   },
   {
-    label: 'internal base2 / reduction3',
-    knobs: { restartBaseConflicts: 2, learnedClauseReductionThreshold: 3 },
+    label: 'internal luby base2 / reduction3',
+    knobs: { restartPolicy: 'luby', restartBaseConflicts: 2, learnedClauseReductionThreshold: 3 },
   },
 ];
 
@@ -56,6 +57,12 @@ class PropertySolver extends Solver {
   deleted = 0;
   laterReductions = 0;
   laterDeleted = 0;
+  // Rounds with NO possible deletion under the pinned two-tier policy: the
+  // reducible tier's worse-half window was empty or fully reason-locked.
+  candidateFreeRounds = 0;
+  fullyLockedRounds = 0;
+  laterCandidateFreeRounds = 0;
+  laterFullyLockedRounds = 0;
 
   override solveAssuming(...args: Parameters<Solver['solveAssuming']>): VariableAssignments | null {
     this.calls += 1;
@@ -80,14 +87,44 @@ class PropertySolver extends Solver {
         assert.ok(retained.has(clause), 'every permanent, low-LBD or reason clause survives');
       }
     }
+    // Exact two-tier selection fidelity: the deleted set is precisely the
+    // unlocked worse half of the reducible tier (stable activity order over
+    // admission order).
+    const reducible = before.filter((clause) => clause.learned && clause.lbd > 2);
+    const ranked = reducible
+      .map((clause, admission) => ({ clause, admission }))
+      .sort(
+        (left, right) =>
+          left.clause.activity - right.clause.activity || left.admission - right.admission,
+      );
+    const window = ranked.slice(0, Math.floor(ranked.length / 2)).map(({ clause }) => clause);
+    assert.deepStrictEqual(
+      new Set(removed),
+      new Set(window.filter((clause) => !reasons.includes(clause))),
+      'exactly the unlocked worse half of the reducible tier',
+    );
     assert.strictEqual(this.stats.learnedClauses, total);
     assert.strictEqual(this.stats.learnedClausesCurrent, live - removed.length);
     this.checkInvariants();
     this.reductions += 1;
     this.deleted += removed.length;
+    if (removed.length === 0) {
+      if (window.length === 0) {
+        this.candidateFreeRounds += 1;
+      } else {
+        this.fullyLockedRounds += 1;
+      }
+    }
     if (this.calls > 1) {
       this.laterReductions += 1;
       this.laterDeleted += removed.length;
+      if (removed.length === 0) {
+        if (window.length === 0) {
+          this.laterCandidateFreeRounds += 1;
+        } else {
+          this.laterFullyLockedRounds += 1;
+        }
+      }
     }
   }
 }
@@ -162,6 +199,10 @@ for (const variant of VARIANTS) {
         deleted: 0,
         laterReductions: 0,
         laterDeleted: 0,
+        candidateFreeRounds: 0,
+        fullyLockedRounds: 0,
+        laterCandidateFreeRounds: 0,
+        laterFullyLockedRounds: 0,
       };
       for (const pool of POOLS) {
         const distinct = new Set<string>();
@@ -229,6 +270,10 @@ for (const variant of VARIANTS) {
             totals.deleted += core.deleted;
             totals.laterReductions += core.laterReductions;
             totals.laterDeleted += core.laterDeleted;
+            totals.candidateFreeRounds += core.candidateFreeRounds;
+            totals.fullyLockedRounds += core.fullyLockedRounds;
+            totals.laterCandidateFreeRounds += core.laterCandidateFreeRounds;
+            totals.laterFullyLockedRounds += core.laterFullyLockedRounds;
           }
           totals.formulas += 1;
         }
@@ -242,10 +287,25 @@ for (const variant of VARIANTS) {
       assert.ok(totals.learned > 0);
       if (variant.knobs !== undefined) {
         assert.ok(totals.restarts > 0);
-        assert.ok(totals.reductions > 0 && totals.deleted > 0);
+        assert.ok(totals.reductions > 0);
+        // The pinned two-tier policy deletes only from the reducible tier's
+        // worse-half window; small incremental searches may legitimately
+        // present no candidates on some knob settings — but a zero-deletion
+        // total is acceptable only when EVERY round is explained (empty
+        // window or fully locked). The base1/reduction1 variant retains hard
+        // deletion evidence (see its diagnostic), and reduction.spec.ts
+        // carries deterministic forced-round deletion witnesses.
         assert.ok(
-          totals.laterReductions > 0 && totals.laterDeleted > 0,
-          'real reduction/deletion after earlier calls',
+          totals.deleted > 0 ||
+            totals.candidateFreeRounds + totals.fullyLockedRounds === totals.reductions,
+          'zero-deletion rounds must all be candidate-free or fully locked',
+        );
+        assert.ok(totals.laterReductions > 0, 'real reduction rounds after earlier calls');
+        assert.ok(
+          totals.laterDeleted > 0 ||
+            totals.laterCandidateFreeRounds + totals.laterFullyLockedRounds ===
+              totals.laterReductions,
+          'zero-deletion later rounds must all be candidate-free or fully locked',
         );
       }
       t.diagnostic(JSON.stringify(totals));

@@ -144,12 +144,71 @@ describe('internal restartBaseConflicts validation', () => {
       Number.MAX_SAFE_INTEGER,
     ]) {
       const label = `base ${restartBaseConflicts}`;
-      const solver = new Solver(compile(formula), { restartBaseConflicts });
+      const solver = new Solver(compile(formula), {
+        restartPolicy: 'luby',
+        restartBaseConflicts,
+      });
       assert.strictEqual(solver.solve(), true, label);
       assert.strictEqual(solver.stats.conflicts, 1, label);
       assert.strictEqual(solver.stats.learnedClauses, 1, label);
       assert.strictEqual(solver.stats.restarts, 0, label);
       assert.strictEqual(expressionValue(formula, solver.model()), Value.TRUE, label);
     }
+  });
+});
+
+describe('internal restartPolicy selector', () => {
+  // Observation-only structural cast, matching the established internals seam.
+  const policyKind = (solver: Solver): string =>
+    (solver as unknown as { restartPolicy: { readonly kind: string } }).restartPolicy.kind;
+
+  it('defaults to the knob-free EMA policy, even when only the Luby base is passed', () => {
+    assert.strictEqual(policyKind(new Solver(compile(and()))), 'ema');
+    assert.strictEqual(policyKind(new Solver(compile(and()), {})), 'ema');
+    // The base validates but NEVER implicitly selects the Luby schedule.
+    assert.strictEqual(policyKind(new Solver(compile(and()), { restartBaseConflicts: 1 })), 'ema');
+    assert.strictEqual(policyKind(new Solver(compile(and()), { restartPolicy: 'ema' })), 'ema');
+  });
+
+  it('selects the Luby schedule only on explicit request', () => {
+    assert.strictEqual(policyKind(new Solver(compile(and()), { restartPolicy: 'luby' })), 'luby');
+    assert.strictEqual(
+      policyKind(new Solver(compile(and()), { restartPolicy: 'luby', restartBaseConflicts: 7 })),
+      'luby',
+    );
+  });
+
+  it('rejects malformed runtime selectors without coercion', () => {
+    const malformed: Array<[string, unknown]> = [
+      ['capitalized', 'EMA'],
+      ['other string', 'binary'],
+      ['empty string', ''],
+      ['zero', 0],
+      ['null', null],
+      ['boolean', true],
+      ['array', ['luby']],
+      ['object', { policy: 'luby' }],
+    ];
+    for (const [label, restartPolicy] of malformed) {
+      assert.throws(
+        () => new Solver(compile(and()), { restartPolicy: restartPolicy as 'luby' }),
+        /restartPolicy must be 'ema' or 'luby'/,
+        label,
+      );
+    }
+  });
+
+  it('keeps the Luby base validation independent of the selected policy', () => {
+    // Format validation applies whenever the knob is present, under either
+    // policy; the EMA default simply never consumes the validated value.
+    assert.doesNotThrow(() => new Solver(compile(and()), { restartBaseConflicts: 5 }));
+    assert.throws(
+      () => new Solver(compile(and()), { restartPolicy: 'ema', restartBaseConflicts: 0 }),
+      /restartBaseConflicts must be a positive safe integer/,
+    );
+    assert.throws(
+      () => new Solver(compile(and()), { restartPolicy: 'luby', restartBaseConflicts: 1.5 }),
+      /restartBaseConflicts must be a positive safe integer/,
+    );
   });
 });

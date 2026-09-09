@@ -1,7 +1,12 @@
 // Mutable solver state, MiniSat-style two-watched-literal unit propagation,
 // scoped pure-literal elimination, and iterative first-UIP CDCL search with
-// non-chronological backjumping, VSIDS branching, phase saving, Luby restarts,
-// and periodic learned-clause reduction with learning-time LBD protection.
+// non-chronological backjumping, provenance-aware root-literal tracking,
+// recursive learned-clause minimization (ccmin_mode=2, iterative over an
+// explicit stack), VSIDS branching, phase saving, pinned deterministic
+// restarts (the Glucose-style EMA default with blocking, or the internally
+// selectable Luby schedule), and periodic learned-clause reduction under the
+// pinned two-tier (glue/reducible) retention policy with decayed clause
+// activity and dynamic LBD tightening.
 // See Design § Solver Core State and Invariants and § Search: From DPLL to
 // CDCL.
 
@@ -15,10 +20,14 @@ export interface SolverStats {
   propagations: number;
   conflicts: number;
   restarts: number;
-  /** Total learned-clause admissions over the solver's lifetime; deletions never rewind it. */
+  /** Learned-clause admissions within the measurement scope; deletions never rewind it. */
   learnedClauses: number;
   /** Live learned clauses currently in the database, excluding permanent blockers. */
   learnedClausesCurrent: number;
+  /** Post-minimization literals produced by conflict analysis in scope, before duplicate suppression. */
+  learnedLiterals: number;
+  /** Literals removed from learned clauses by recursive minimization in scope. */
+  minimizedLiterals: number;
 }
 
 // Overrides heuristic choices at decision points: it receives named, unassigned
@@ -36,11 +45,43 @@ interface SolverOptions {
   enablePle?: boolean | undefined;
   stats?: SolverStats | undefined;
   maxConflicts?: number | undefined;
-  // Internal conflict-budget calibration only; never forwarded by public options.
+  // Internal restart-policy selector; never forwarded by public options.
+  // 'ema' (the default) is knob-free; 'luby' explicitly selects the retained
+  // Luby schedule, which restartBaseConflicts then configures. Passing the
+  // base alone never selects Luby.
+  restartPolicy?: 'ema' | 'luby' | undefined;
+  // Internal Luby base conflict-budget calibration only; inert under the
+  // default EMA policy. Never forwarded by public options.
   restartBaseConflicts?: number | undefined;
   // New learned admissions per reduction round, not a cap on protected clauses.
   // Internal only: neither this knob nor Solver is exported by the public API.
   learnedClauseReductionThreshold?: number | undefined;
+}
+
+type SearchResult = 'sat' | 'unsat' | 'paused';
+
+// rootBasis dependency bits (Design § Learning with provenance): a level-0
+// assignment's justification may depend on caller-supplied assumptions or on
+// PLE pins, never on those contexts for a base-derived (zero) root fact. The
+// union rule in enqueue propagates taint through root implications.
+const ROOT_BASIS_ASSUMPTION = 1;
+const ROOT_BASIS_PLE = 2;
+
+interface SearchState {
+  assumptions: readonly number[];
+  // The current trail level is the replay cursor within assumptions. Keeping
+  // the prefix phase avoids restarting propagation between dummy prefix steps.
+  phase: 'startup' | 'search' | 'prefix';
+  verdict: 'sat' | 'unsat' | null;
+}
+
+interface PropagationCursor {
+  event: number;
+  falseLit: number;
+  // Binary-clause lists are drained before the long-clause lists (implicit
+  // propagation first); `nextWatch` is the walk index within the active list.
+  phase: 'binary' | 'long';
+  nextWatch: number;
 }
 
 // Gates the trail-invariant audits in enqueue/cancelUntil/propagate. Audits
@@ -85,6 +126,160 @@ export function luby(index: number): number {
   return value;
 }
 
+// ---------------------------------------------------------------------------
+// Restart policies (Design § Solver Core, Restart policy: the pinned
+// configuration). A policy is a self-contained decision unit — state plus
+// post-transaction inputs, with no coupling to solver internals — so tests
+// can drive it directly with scripted LBD and trail-length streams. The
+// search calls onConflict() exactly once per learned-conflict transaction;
+// resetSearch() starts each search's fresh epoch. These classes are exported
+// only from this internal module, never from the package API.
+// ---------------------------------------------------------------------------
+
+// Observations handed to the policy after a conflict transaction.
+export interface RestartSample {
+  // LBD of the clause this conflict's analysis just learned.
+  readonly lbd: number;
+  // Trail length AFTER the transaction (learned assertion enqueued) and
+  // BEFORE any restart cancellation — never the emptied post-cancel trail.
+  readonly trailLength: number;
+  // Whether the transaction's backjump already returned the trail to root.
+  readonly atRoot: boolean;
+}
+
+// 'blocked' is observational (the solver treats it as 'none'); 'restart'
+// consumes the epoch, and `actual` distinguishes a real positive-level
+// cancellation from an already-root no-op.
+export type RestartVerdict =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'blocked' }
+  | { readonly kind: 'restart'; readonly actual: boolean };
+
+// Shared verdict singletons: the hot conflict path must not allocate. The
+// policies never mutate them; callers only read `kind`/`actual`.
+const VERDICT_NONE: RestartVerdict = { kind: 'none' };
+const VERDICT_BLOCKED: RestartVerdict = { kind: 'blocked' };
+const VERDICT_RESTART_ACTUAL: RestartVerdict = { kind: 'restart', actual: true };
+const VERDICT_RESTART_NOOP: RestartVerdict = { kind: 'restart', actual: false };
+
+// The retained Luby schedule: conflict epochs of base × luby(1..n), counted
+// in base-sized blocks — this implements base * luby(index) without an unsafe
+// Number product or a unit-increment counter that could stop advancing above
+// 2^53. Ordinary backjumps do NOT reset the epoch. Selected explicitly via
+// the internal restartPolicy knob; never the default.
+export class LubyRestartPolicy {
+  readonly kind = 'luby' as const;
+  readonly baseConflicts: number;
+  restartIndex = 1;
+  blocksUntilRestart = luby(1);
+  conflictsInBlock = 0;
+
+  constructor(baseConflicts: number) {
+    this.baseConflicts = baseConflicts;
+  }
+
+  resetSearch(): void {
+    this.restartIndex = 1;
+    this.blocksUntilRestart = luby(1);
+    this.conflictsInBlock = 0;
+  }
+
+  onConflict(sample: RestartSample): RestartVerdict {
+    this.conflictsInBlock += 1;
+    if (this.conflictsInBlock === this.baseConflicts) {
+      this.conflictsInBlock = 0;
+      this.blocksUntilRestart -= 1;
+      if (this.blocksUntilRestart === 0) {
+        // Consume an exhausted epoch even if the normal backjump already
+        // reached root. That root-level no-op is not an additional restart.
+        this.restartIndex += 1;
+        this.blocksUntilRestart = luby(this.restartIndex);
+        return sample.atRoot ? VERDICT_RESTART_NOOP : VERDICT_RESTART_ACTUAL;
+      }
+    }
+    return VERDICT_NONE;
+  }
+}
+
+// Pinned deterministic EMA configuration (plan-d285: "EMA/retention constants
+// are pinned but arbitrary"; changing them is a benchmark-disclosed decision,
+// never silent tuning).
+const EMA_ALPHA_FAST = 0.25;
+const EMA_ALPHA_SLOW = 0.02;
+const EMA_RESTART_INTERVAL = 32;
+const EMA_RESTART_RATIO = 1.25;
+const EMA_BLOCK_FACTOR = 1.1;
+
+// The default restart policy: deterministic Glucose-style EMA restarts with
+// blocking. The fast (α=0.25) and slow (α=0.02) LBD averages initialize to
+// the FIRST learned clause's LBD, then update on every conflict over the
+// solver's LIFETIME — deliberately across searches and incremental calls, so
+// call N's restart timing may depend on earlier calls' LBD history (disclosed
+// in the migration notes). The per-search epoch — the conflicts-since
+// counter, the postponement deadline, and the blocking snapshot — resets on
+// resetSearch(); the EMA histories never do.
+export class EmaRestartPolicy {
+  readonly kind = 'ema' as const;
+  // Lifetime LBD histories; null until the first learned LBD seeds both.
+  emaFast: number | null = null;
+  emaSlow: number | null = null;
+  // Per-search epoch state.
+  conflictsSinceRestart = 0;
+  nextEligibleAt = EMA_RESTART_INTERVAL;
+  // Trail length sampled at this search's previous ACTUAL (positive-level)
+  // restart; null until then, so a search's first triggered attempt is
+  // unblocked. Root no-ops never create a snapshot.
+  previousRestartTrail: number | null = null;
+
+  resetSearch(): void {
+    this.conflictsSinceRestart = 0;
+    this.nextEligibleAt = EMA_RESTART_INTERVAL;
+    this.previousRestartTrail = null;
+  }
+
+  onConflict(sample: RestartSample): RestartVerdict {
+    let fast = this.emaFast;
+    let slow = this.emaSlow;
+    if (fast === null || slow === null) {
+      fast = sample.lbd;
+      slow = sample.lbd;
+    } else {
+      fast += EMA_ALPHA_FAST * (sample.lbd - fast);
+      slow += EMA_ALPHA_SLOW * (sample.lbd - slow);
+    }
+    this.emaFast = fast;
+    this.emaSlow = slow;
+    this.conflictsSinceRestart += 1;
+    if (this.conflictsSinceRestart < this.nextEligibleAt) {
+      return VERDICT_NONE;
+    }
+    if (!(fast > EMA_RESTART_RATIO * slow)) {
+      return VERDICT_NONE;
+    }
+    if (
+      this.previousRestartTrail !== null &&
+      sample.trailLength > EMA_BLOCK_FACTOR * this.previousRestartTrail
+    ) {
+      // Blocking: the trail grew past 1.1× its length at the previous actual
+      // restart, so postpone the next eligible check by one full interval.
+      // The epoch is NOT consumed and no new snapshot is taken.
+      this.nextEligibleAt = this.conflictsSinceRestart + EMA_RESTART_INTERVAL;
+      return VERDICT_BLOCKED;
+    }
+    // Consume the epoch. An already-root no-op neither counts as a restart
+    // nor records a blocking snapshot.
+    this.conflictsSinceRestart = 0;
+    this.nextEligibleAt = EMA_RESTART_INTERVAL;
+    if (sample.atRoot) {
+      return VERDICT_RESTART_NOOP;
+    }
+    this.previousRestartTrail = sample.trailLength;
+    return VERDICT_RESTART_ACTUAL;
+  }
+}
+
+export type RestartPolicy = EmaRestartPolicy | LubyRestartPolicy;
+
 function emptyStats(): SolverStats {
   return {
     decisions: 0,
@@ -93,13 +288,52 @@ function emptyStats(): SolverStats {
     restarts: 0,
     learnedClauses: 0,
     learnedClausesCurrent: 0,
+    learnedLiterals: 0,
+    minimizedLiterals: 0,
   };
+}
+
+// One watch-list entry: the watched clause plus a cached BLOCKER literal —
+// the clause's current OTHER watched literal (MiniSat). When the blocker is
+// currently true, the clause is satisfied and propagation skips the clause
+// dereference entirely. Parity invariant: an entry's blocker always equals
+// the clause's current other watch, in BOTH lists — established at attach,
+// rewritten on inspection (refresh), and kept in step on relocation by
+// updating the cross-linked twin entry in the other watch list. A stale
+// blocker could be true where the actual other watch is not, skipping a
+// relocation the unblocked loop would perform and silently changing watch
+// order (and thereby potentially later counters); the invariant keeps the
+// skip condition exactly equivalent to the pre-blocker other-watch check.
+// Internal only: exported from this module for observation tooling, never
+// re-exported from the package API.
+export interface WatchEntry {
+  readonly clause: Clause;
+  blocker: number;
+  // The entry for the same clause in the OTHER watch list. Null only
+  // transiently inside attachClause while the pair is cross-linked.
+  twin: WatchEntry | null;
+}
+
+// One binary-clause watch entry: the clause plus its OTHER literal. Binary
+// clauses propagate implicitly — the other literal is known without
+// dereferencing the clause's literal array; the clause object is needed only
+// as the enqueue reason or as the returned conflict. Binary watches never
+// relocate (both literals are always watched), so no blocker/twin tracking
+// is required. Internal only, like WatchEntry.
+export interface BinaryWatchEntry {
+  readonly clause: Clause;
+  readonly other: number;
 }
 
 export class Solver {
   readonly assigns: Int8Array;
   readonly level: Int32Array;
   readonly reason: Array<Clause | null>;
+  // Level-0 dependency provenance per variable (ROOT_BASIS_* bits): zero marks
+  // a base-derived root fact; nonzero marks assumption/PLE-tainted ancestry.
+  // Meaningful only while the variable is assigned at level 0; cancellation
+  // resets it with the assignment, and a root (re-)enqueue recomputes it.
+  readonly rootBasis: Uint8Array;
   readonly activity: Float64Array;
   readonly polarity: Int8Array;
   readonly trail: number[] = [];
@@ -107,13 +341,21 @@ export class Solver {
   qhead = 0;
 
   readonly clauses: Clause[];
-  // Two-watched-literal lists: `watches[l]` holds every clause currently
-  // watching literal `l` — i.e. l is one of that clause's two watched
-  // literals, kept at clause.lits[0] or clause.lits[1] (the MiniSat in-place
-  // swap convention). Watch lists hold clause object references, never
-  // indices, so clause deletion can never dangle a watch. Clause
-  // attachment and propagation's watch relocation preserve that identity.
-  readonly watches: Clause[][];
+  // Two-watched-literal lists for LONG clauses (3+ literals): `watches[l]`
+  // holds an entry for every long clause currently watching literal `l` —
+  // i.e. l is one of that clause's two watched literals, kept at
+  // clause.lits[0] or clause.lits[1] (the MiniSat in-place swap convention).
+  // Entries carry the clause object reference, never an index, so clause
+  // deletion can never dangle a watch, plus the blocker literal and twin
+  // link (see WatchEntry). Clause attachment and propagation's watch
+  // relocation preserve that identity. Binary clauses live in
+  // `binaryWatches` instead.
+  readonly watches: WatchEntry[][];
+  // Dedicated binary-clause watch lists (separately measured experiment):
+  // `binaryWatches[l]` holds an entry for every 2-literal clause containing
+  // `l`, keyed by the OTHER literal for implicit propagation. Drained before
+  // the long-clause lists on every falsified event.
+  readonly binaryWatches: BinaryWatchEntry[][];
   readonly stats: SolverStats;
   readonly variablePriority: VariablePriority | undefined;
 
@@ -121,6 +363,7 @@ export class Solver {
   private readonly enablePle: boolean;
   private readonly maxConflicts: number | undefined;
   private readonly restartBaseConflicts: number;
+  private readonly restartPolicy: RestartPolicy;
   private readonly learnedClauseReductionThreshold: number;
   private learnedSinceReduction = 0;
   // Semantic clause identity must not depend on the mutable watch order.
@@ -139,6 +382,13 @@ export class Solver {
   // full; the handoff is consumed on first use.
   private analyzedNormalized: { clause: Clause; normalized: number[] } | null = null;
   private varInc = 1;
+  // Clause-activity increment for the pinned decayed scheme (Design § Solver
+  // Core, Retention policy): analysis bumps use the CURRENT increment, which
+  // grows by 1/0.999 after each reduction round, so older bumps decay
+  // relative to newer ones. This is LIFETIME clause-aging accounting — like
+  // varInc and the reduction cadence, it is deliberately independent of the
+  // resettable per-call output stats.
+  private claInc = 1;
   // Indexed binary max-heap, ordered by activity then LOWER variable index.
   // Only named variables have positions; -1 means absent. Assignments made
   // by propagation or the hook remain lazily in the heap until popped.
@@ -154,6 +404,13 @@ export class Solver {
   private startupConflictReported = false;
   private permanentUnsat = false;
   private incrementalCallActive = false;
+  private searchState: SearchState | null = null;
+  // Pending propagation outlives an abandoned search. Cleanup rewinds retained
+  // events before dropping this cursor, even on a root-level no-op cancellation.
+  private propagationCursor: PropagationCursor | null = null;
+  // Call-scoped, NOT search-scoped: short enumeration searches share a slice.
+  private scheduling: { quantum: number; remaining: number } | null = null;
+  private enumerationActive = false;
 
   constructor(cnf: CompiledCnf, opts: SolverOptions = {}) {
     if (
@@ -169,6 +426,13 @@ export class Solver {
       throw new Error('restartBaseConflicts must be a positive safe integer');
     }
     if (
+      opts.restartPolicy !== undefined &&
+      opts.restartPolicy !== 'ema' &&
+      opts.restartPolicy !== 'luby'
+    ) {
+      throw new Error("restartPolicy must be 'ema' or 'luby'");
+    }
+    if (
       opts.learnedClauseReductionThreshold !== undefined &&
       (!Number.isSafeInteger(opts.learnedClauseReductionThreshold) ||
         opts.learnedClauseReductionThreshold < 1)
@@ -180,6 +444,7 @@ export class Solver {
     this.assigns = new Int8Array(cnf.numVars).fill(Value.UNSET);
     this.level = new Int32Array(cnf.numVars);
     this.reason = Array<Clause | null>(cnf.numVars).fill(null);
+    this.rootBasis = new Uint8Array(cnf.numVars);
     this.seen = new Uint8Array(cnf.numVars);
     this.activity = new Float64Array(cnf.numVars);
     this.polarity = new Int8Array(cnf.numVars).fill(Value.FALSE);
@@ -193,18 +458,24 @@ export class Solver {
     }
     this.clauses = [];
     this.watches = Array.from({ length: cnf.numVars * 2 }, () => []);
+    this.binaryWatches = Array.from({ length: cnf.numVars * 2 }, () => []);
     this.stats = opts.stats ?? emptyStats();
     this.variablePriority = opts.variablePriority;
     this.enablePle = opts.enablePle ?? false;
     this.maxConflicts = opts.maxConflicts;
     this.restartBaseConflicts = opts.restartBaseConflicts ?? 100;
+    this.restartPolicy =
+      opts.restartPolicy === 'luby'
+        ? new LubyRestartPolicy(this.restartBaseConflicts)
+        : new EmaRestartPolicy();
     this.learnedClauseReductionThreshold = opts.learnedClauseReductionThreshold ?? 10_000;
 
     // Add clauses before assumptions. Units are deliberately absent from
-    // watch lists: they are asserted once at level zero instead. Every
-    // clause of length >= 2 watches its first two literals (positions 0 and
-    // 1); later propagation relocates a watch by swapping it into the
-    // falsified literal's slot. The empty clause short-circuits UNSAT.
+    // watch lists: they are asserted once at level zero instead. Binary
+    // clauses go to the dedicated binaryWatches lists; every longer clause
+    // watches its first two literals (positions 0 and 1), and later
+    // propagation relocates a watch by swapping it into the falsified
+    // literal's slot. The empty clause short-circuits UNSAT.
     for (const clause of cnf.clauses) {
       const normalized = normalizeClauseLits(clause.lits);
       if (normalized === null) {
@@ -262,7 +533,24 @@ export class Solver {
     }
     this.level[variable] = this.trailLim.length;
     this.reason[variable] = reason;
+    if (this.trailLim.length === 0) {
+      // Root-fact provenance: a root implication unions the dependency masks
+      // of its reason's antecedents (a unit-clause reason has none, seeding
+      // base-derived zero); a reason-null root enqueue starts untainted and
+      // its caller (constructor assumptions, PLE) seeds the matching bit.
+      let basis = 0;
+      if (reason !== null) {
+        for (const antecedent of reason.lits) {
+          const other = varOf(antecedent);
+          if (other !== variable) {
+            basis |= this.rootBasis[other];
+          }
+        }
+      }
+      this.rootBasis[variable] = basis;
+    }
     this.trail.push(lit);
+    this.chargeWork();
     this.assertTrailInvariant();
     return true;
   }
@@ -273,6 +561,13 @@ export class Solver {
   // the cached clause without re-counting, so stats and the conflict budget
   // agree with the single conflict.
   propagate(): Clause | null {
+    // Preserve the uninterrupted observation seam used by internal audits.
+    const result = this.propagateSlice(false);
+    if (result === 'paused') throw new Error('uninterrupted propagation cannot pause');
+    return result;
+  }
+
+  private propagateSlice(interruptible: boolean): Clause | null | 'paused' {
     if (this.startupConflict !== null) {
       if (!this.startupConflictReported) {
         this.recordConflict();
@@ -281,45 +576,112 @@ export class Solver {
       return this.startupConflict;
     }
 
-    // Two-watched-literal propagation (MiniSat scheme). The trail is drained
-    // from `qhead`; dequeuing the (now true) literal `assignedLit` falsifies
-    // `neg(assignedLit)`, so only `watches[neg(assignedLit)]` — the clauses
-    // whose watched literal just became false — must be examined. Per clause:
-    //   1. Normalize the falsified watched literal into slot 1 (in-place
-    //      swap), so slot 0 holds the other watch.
-    //   2. Blocking-literal optimization: if the other watch is already
-    //      true, the clause is satisfied — nothing to do.
+    // Two-watched-literal propagation (MiniSat scheme), with binary clauses
+    // on dedicated lists (Experiment B). The trail is drained from `qhead`;
+    // dequeuing the (now true) literal `assignedLit` falsifies
+    // `neg(assignedLit)`, so only entries watching `neg(assignedLit)` must be
+    // examined. Binary entries are drained FIRST (implicit propagation: the
+    // entry's `other` literal is the unit/conflict payload, so the clause's
+    // literal array is never dereferenced on that path), then long-clause
+    // entries. Per long-clause entry:
+    //   1. Blocking-literal optimization: one litValue on the entry's cached
+    //      blocker (the clause's current other watch). TRUE means satisfied —
+    //      skip WITHOUT dereferencing the clause. The blocker parity
+    //      invariant (see WatchEntry; audited per visit under debug
+    //      assertions) makes this lookup's value exactly the other-watch
+    //      value the pre-blocker loop computed after dereferencing.
+    //   2. Normalize the falsified watched literal into slot 1 (in-place
+    //      swap), so slot 0 holds the other watch; refresh the blocker.
     //   3. Scan slots 2.. for any literal that is not false; the first such
     //      literal becomes the replacement watch (in-place swap: slot 1 takes
     //      the candidate, the falsified literal moves into the vacated slot;
-    //      the clause is removed from this list and appended to the
-    //      candidate's list). If none exists, the clause is unit (enqueue the
-    //      other watch) or conflicting (return it).
+    //      the entry is removed from this list and appended to the
+    //      candidate's list, and the TWIN entry's blocker is updated to the
+    //      candidate — this entry's own blocker still names slot 0, which the
+    //      swap does not change). If none exists, the clause is unit
+    //      (enqueue the other watch) or conflicting (return it), decided by
+    //      the already-computed other-watch value.
     // The list is mutated while iterated, so it is walked backwards: removing
-    // a clause swaps the current slot with the last element and pops, and
+    // an entry swaps the current slot with the last element and pops, and
     // every element above the current slot has already been examined, so no
-    // unexamined clause can be displaced. Clauses that are unit or that stay
-    // watching the falsified literal remain in the list.
-    while (this.qhead < this.trail.length) {
-      const assignedLit = this.trail[this.qhead];
-      this.qhead += 1;
-      const falseLit = neg(assignedLit);
+    // unexamined entry can be displaced. Entries whose clause is unit or that
+    // stay watching the falsified literal remain in the list.
+    while (this.propagationCursor !== null || this.qhead < this.trail.length) {
+      if (interruptible && this.workExhausted()) return 'paused';
+      if (this.propagationCursor === null) {
+        const event = this.qhead++;
+        const falseLit = neg(this.trail[event]);
+        this.propagationCursor = {
+          event,
+          falseLit,
+          phase: 'binary',
+          nextWatch: this.binaryWatches[falseLit].length - 1,
+        };
+      }
+      const cursor = this.propagationCursor;
+      const falseLit = cursor.falseLit;
+
+      if (cursor.phase === 'binary') {
+        const binaryList = this.binaryWatches[falseLit];
+        if (binaryList === undefined) {
+          throw new Error(`missing binary watch list for literal: ${falseLit}`);
+        }
+        while (cursor.nextWatch >= 0) {
+          if (interruptible && this.workExhausted()) return 'paused';
+          const index = cursor.nextWatch--;
+          this.chargeWork();
+          const entry = binaryList[index];
+          const otherValue = litValue(entry.other, this.assigns);
+          if (otherValue === Value.TRUE) {
+            continue;
+          }
+          if (otherValue === Value.FALSE) {
+            this.recordConflict();
+            this.propagationCursor = null;
+            return entry.clause;
+          }
+          if (!this.enqueue(entry.other, entry.clause)) {
+            this.recordConflict();
+            this.propagationCursor = null;
+            return entry.clause;
+          }
+          this.stats.propagations += 1;
+        }
+        cursor.phase = 'long';
+        cursor.nextWatch = this.watches[falseLit].length - 1;
+      }
+
       const watchList = this.watches[falseLit];
       if (watchList === undefined) {
         throw new Error(`missing watch list for literal: ${falseLit}`);
       }
 
-      for (let index = watchList.length - 1; index >= 0; index -= 1) {
-        const clause = watchList[index];
+      while (cursor.nextWatch >= 0) {
+        if (interruptible && this.workExhausted()) return 'paused';
+        const index = cursor.nextWatch--;
+        this.chargeWork();
+        const entry = watchList[index];
+        // ONE literal lookup per visit: the blocker always equals the clause's
+        // current other watch (twin-kept parity invariant), so its value
+        // doubles as the other-watch value after dereferencing — the previous
+        // loop's second litValue call on the same literal is gone.
+        const otherValue = litValue(entry.blocker, this.assigns);
+        if (otherValue === Value.TRUE) {
+          continue;
+        }
+        const clause = entry.clause;
         if (clause.lits[0] === falseLit) {
           clause.lits[0] = clause.lits[1];
           clause.lits[1] = falseLit;
         }
         const otherWatch = clause.lits[0];
-
-        if (litValue(otherWatch, this.assigns) === Value.TRUE) {
-          continue;
+        if (debugAssertions && entry.blocker !== otherWatch) {
+          throw new Error(`blocker invariant violated: ${entry.blocker} is not the other watch`);
         }
+        // Refresh on inspection: a no-op store while the invariant holds,
+        // keeping the entry truthful even if watch slots were swapped since
+        // the last visit of this list.
+        entry.blocker = otherWatch;
 
         let relocated = false;
         for (let k = 2; k < clause.lits.length; k += 1) {
@@ -331,7 +693,15 @@ export class Solver {
             if (candidateWatchList === undefined) {
               throw new Error(`missing watch list for literal: ${candidate}`);
             }
-            candidateWatchList.push(clause);
+            const twin = entry.twin;
+            if (twin === null) {
+              throw new Error(`watch entry is missing its twin: ${falseLit}`);
+            }
+            // From the twin's list the clause's other watch is the slot-1
+            // literal, which this swap just replaced; keep the twin in step
+            // so NO list ever holds a stale blocker.
+            twin.blocker = candidate;
+            candidateWatchList.push(entry);
             const lastIndex = watchList.length - 1;
             watchList[index] = watchList[lastIndex];
             watchList.pop();
@@ -343,16 +713,19 @@ export class Solver {
           continue;
         }
 
-        if (litValue(otherWatch, this.assigns) === Value.FALSE) {
+        if (otherValue === Value.FALSE) {
           this.recordConflict();
+          this.propagationCursor = null;
           return clause;
         }
         if (!this.enqueue(otherWatch, clause)) {
           this.recordConflict();
+          this.propagationCursor = null;
           return clause;
         }
         this.stats.propagations += 1;
       }
+      this.propagationCursor = null;
     }
 
     return null;
@@ -392,9 +765,24 @@ export class Solver {
     let clause = conflict;
     let assertingLit: number;
     while (true) {
-      // Usage count, not decayed activity: the conflict seed and every reason
-      // actually consumed get +1. The UIP's reason is NOT consumed or bumped.
-      clause.activity += 1;
+      // Decayed clause activity: the conflict seed and every reason actually
+      // consumed are bumped by the CURRENT increment. The UIP's reason is NOT
+      // consumed or bumped.
+      this.bumpClauseActivity(clause);
+      // Dynamic LBD tightening (Design § Solver Core, Retention policy), the
+      // Glucose "dynamic nblevel" rule: on analysis reuse, a REDUCIBLE-tier
+      // clause's stored score tightens to the current distinct-nonzero-level
+      // count when the recomputation improves it by at least two — never an
+      // increase — which can promote the clause into the glue tier. The
+      // one-step hysteresis keeps incidental level drift from eroding the
+      // reducible tier (single-step recomputes carry no lasting signal);
+      // permanent clauses (lbd 0) and current glue clauses never participate.
+      if (clause.lbd > 2) {
+        const tightened = this.computeClauseLbd(clause.lits);
+        if (tightened + 1 < clause.lbd) {
+          clause.lbd = tightened;
+        }
+      }
       for (const lit of clause.lits) {
         const variable = varOf(lit);
         // Reason watch slots can move, so skip the pivot by variable identity,
@@ -410,12 +798,20 @@ export class Solver {
         // Once per seen variable, including root antecedents, auxiliaries
         // and variables that disappear from the learned clause by resolution.
         this.bumpVariableActivity(variable);
-        if (this.level[variable] === currentLevel) {
+        const level = this.level[variable];
+        if (level === currentLevel) {
           currentCount += 1;
-        } else {
-          // Retain level-zero antecedents too. Assumptions and PLE pins need
-          // not be base-formula consequences; dropping their literals would
-          // silently make the learned clause depend on that root context.
+        } else if (level > 0 || this.rootBasis[variable] !== 0) {
+          // Retain non-root antecedents, plus level-zero antecedents with
+          // assumption/PLE provenance: those are not base-formula
+          // consequences, so dropping them would silently make the learned
+          // clause depend on that root context (breaking later core
+          // extraction). A BASE-DERIVED root fact is a consequence of the
+          // permanent clause database, so it drops out (MiniSat's root
+          // skipping) while the learned clause stays unconditionally
+          // entailed. A dropped root antecedent stays seen-marked: in
+          // minimization it reads as resolving into the clause, which is
+          // sound exactly because it is base-entailed.
           learnedLits.push(lit);
         }
       }
@@ -438,7 +834,6 @@ export class Solver {
       currentCount -= 1;
       if (currentCount === 0) {
         assertingLit = neg(pivot);
-        learnedLits.push(assertingLit);
         break;
       }
       resolvedVariable = varOf(pivot);
@@ -449,16 +844,50 @@ export class Solver {
       clause = reason;
     }
 
+    // Iterative recursive minimization (ccmin_mode=2 semantics; Design §
+    // Learning with provenance): a non-asserting literal is removable when
+    // its reason's antecedents all resolve into the learned clause. Retained
+    // tainted root literals are poison — never removed, and an unmarked
+    // tainted root antecedent blocks a removal that would silently resolve
+    // through it. MiniSat's abstract-level bitmask prunes the recursion.
+    let abstractLevels = 0;
+    for (const lit of learnedLits) {
+      abstractLevels |= 1 << (this.level[varOf(lit)] & 31);
+    }
+    let minimized = 0;
+    let keptCount = 0;
+    for (let read = 0; read < learnedLits.length; read += 1) {
+      const lit = learnedLits[read];
+      const variable = varOf(lit);
+      if (
+        this.level[variable] === 0 ||
+        this.reason[variable] === null ||
+        !this.litRedundant(variable, abstractLevels)
+      ) {
+        learnedLits[keptCount] = lit;
+        keptCount += 1;
+      } else {
+        // Removed literals stay seen-marked (MiniSat analyze_toclear
+        // semantics): transitively implied by the retained remainder.
+        minimized += 1;
+      }
+    }
+    learnedLits.length = keptCount;
+    learnedLits.push(assertingLit);
+    this.stats.learnedLiterals += learnedLits.length;
+    this.stats.minimizedLiterals += minimized;
+
     const normalized = normalizeClauseLits(learnedLits);
     if (normalized === null || normalized.length === 0) {
       throw new Error('first-UIP analysis must produce a nonempty, non-tautological clause');
     }
     const lits = this.orderAssertingLits(normalized, assertingLit);
-    // LBD is the number of DISTINCT assignment levels at learning time, not
-    // clause length or depth. Include level zero (assumptions/PLE antecedents
-    // are retained above). Backjumping/asserting can merge these levels, so
-    // computing this later would incorrectly promote high-LBD clauses to glue.
-    const lbd = new Set(lits.map((lit) => this.level[varOf(lit)])).size;
+    // Score the final minimized clause with the shared LBD metric: retained
+    // tainted root literals (level zero) do not inflate the score, restoring
+    // glue-tier (LBD<=2) protection for root-touching clauses. Computing this
+    // later would be wrong: backjumping/asserting can merge the levels of the
+    // remaining literals.
+    const lbd = this.computeClauseLbd(lits);
     // MiniSat's relative decay: future conflicts get a larger increment.
     // This must follow ALL bumps (and any rescaling) for this conflict.
     this.varInc *= 1 / 0.95;
@@ -471,6 +900,58 @@ export class Solver {
       learned,
       backjumpLevel: lits.length === 1 ? 0 : this.level[varOf(lits[1])],
     };
+  }
+
+  // ccmin_mode=2 recursive redundancy test, iterative over an explicit stack
+  // (no recursion in the solver core). `variable` is a learned-clause member
+  // with a non-null reason. Returns true when every antecedent chain resolves
+  // into the learned clause (seen-marked), into base-derived root facts, or
+  // into recursively redundant literals within the clause's abstract levels.
+  // Newly seen-marked variables STAY marked on success (they are implied by
+  // the retained clause); on failure exactly this call's marks are reverted.
+  private litRedundant(variable: number, abstractLevels: number): boolean {
+    const stack: number[] = [variable];
+    const marked: number[] = [];
+    let current = stack.pop();
+    while (current !== undefined) {
+      const reason = this.reason[current];
+      if (reason === null) {
+        throw new Error('recursive minimization requires a non-null reason');
+      }
+      for (const lit of reason.lits) {
+        const antecedent = varOf(lit);
+        if (antecedent === current || this.seen[antecedent] !== 0) {
+          continue;
+        }
+        const level = this.level[antecedent];
+        if (level === 0) {
+          if (this.rootBasis[antecedent] === 0) {
+            // Base-derived root antecedents resolve away, exactly like the
+            // level-zero skip in first-UIP analysis.
+            continue;
+          }
+          // Tainted root poison: removing the literal would silently resolve
+          // through an assumption/PLE-derived fact absent from the clause.
+          for (const markedVariable of marked) {
+            this.seen[markedVariable] = 0;
+          }
+          return false;
+        }
+        if (this.reason[antecedent] !== null && (abstractLevels & (1 << (level & 31))) !== 0) {
+          this.seen[antecedent] = 1;
+          this.seenTouched.push(antecedent);
+          marked.push(antecedent);
+          stack.push(antecedent);
+        } else {
+          for (const markedVariable of marked) {
+            this.seen[markedVariable] = 0;
+          }
+          return false;
+        }
+      }
+      current = stack.pop();
+    }
+    return true;
   }
 
   // Register a learned consequence, with its intended assertion in slot 0.
@@ -583,44 +1064,88 @@ export class Solver {
   // and constructs ONCE, with PLE disabled. Assumptions were installed once
   // by the constructor and remain at root.
   enumerateModels(): VariableAssignments[] {
+    const driver = this.enumerateSlices(Number.POSITIVE_INFINITY);
+    const result = driver.next();
+    if (!result.done) throw new Error('synchronous enumeration cannot pause');
+    return result.value;
+  }
+
+  // Internal resumable driver; no public generator/streaming API. Yield only
+  // after complete search operations or model materialization + blocker admission.
+  *enumerateSlices(workQuantum: number): Generator<'paused', VariableAssignments[]> {
     if (this.enablePle) {
       throw new Error('model enumeration requires enablePle: false');
     }
+    this.validateQuantum(workQuantum);
+    this.enumerationActive = true;
+    this.scheduling = { quantum: workQuantum, remaining: workQuantum };
     const solutions: VariableAssignments[] = [];
-    while (this.solve()) {
-      solutions.push(this.model());
-      const blocker: number[] = [];
-      for (let variable = 0; variable < this.cnf.numNamedVars; variable += 1) {
-        blocker.push(variable * 2 + (this.assigns[variable] === Value.TRUE ? 1 : 0));
+    try {
+      while (true) {
+        let sat: boolean;
+        if (workQuantum === Number.POSITIVE_INFINITY) {
+          sat = this.solve();
+        } else {
+          this.startSearch();
+          let result = this.searchSlice(workQuantum);
+          while (result === 'paused') {
+            yield 'paused';
+            result = this.searchSlice(workQuantum);
+          }
+          sat = result === 'sat';
+          this.finishSearch();
+        }
+        if (!sat) return solutions;
+        solutions.push(this.model());
+        const blocker: number[] = [];
+        for (let variable = 0; variable < this.cnf.numNamedVars; variable += 1) {
+          blocker.push(variable * 2 + (this.assigns[variable] === Value.TRUE ? 1 : 0));
+        }
+        // Capture the complete named assignment before admission cancels to
+        // root. Auxiliaries are never blocked or exposed. Learned consequences
+        // of the growing formula (including older blockers) stay sound forever.
+        this.addPermanentClause(blocker);
+        this.chargeWork();
+        if (this.workExhausted()) {
+          yield 'paused';
+          this.scheduling.remaining = workQuantum;
+        }
       }
-      // Capture the complete named assignment before admission cancels to
-      // root. Auxiliaries are never blocked or exposed. Learned consequences
-      // of the growing formula (including older blockers) stay sound forever.
-      this.addPermanentClause(blocker);
+    } finally {
+      this.finishSearch();
+      this.cancelUntil(0);
+      this.scheduling = null;
+      this.enumerationActive = false;
     }
-    return solutions;
   }
 
-  // Stable activity ranking considers the worse floor(n/2) of ALL live learned
-  // clauses, skipping protected entries without backfilling from the better
-  // half. Equal activities retain database/admission order (stable Array.sort).
+  // Pinned two-tier retention (Design § Solver Core, Retention policy): the
+  // GLUE tier (LBD <= 2) is NEVER a deletion candidate, so only the REDUCIBLE
+  // tier (LBD > 2) is ranked — a stable activity sort, so equal activities
+  // keep database/admission order — and its worse floor(n/2) is deleted,
+  // skipping reason-locked clauses WITHOUT backfilling from the better half.
   // The permanent originals/blocking clauses are never candidates by role.
   reduceLearnedClauses(): void {
     // Progress the cadence even if every candidate is protected. Testing the
     // live size alone would repeatedly scan/sort on EVERY subsequent conflict.
     this.learnedSinceReduction = 0;
-    const learned = this.clauses.filter((clause) => clause.learned);
-    learned.sort((left, right) => left.activity - right.activity);
+    const reducible = this.clauses.filter((clause) => clause.learned && clause.lbd > 2);
+    reducible.sort((left, right) => left.activity - right.activity);
     // Inspect the complete reason array: root and auxiliary implications, and
     // pending assertions, all lock their clauses regardless of watch position.
     const locked = new Set(this.reason);
     const removed = new Set<Clause>();
-    for (let index = 0; index < Math.floor(learned.length / 2); index += 1) {
-      const clause = learned[index];
-      if (clause.lbd > 2 && !locked.has(clause)) {
+    for (let index = 0; index < Math.floor(reducible.length / 2); index += 1) {
+      const clause = reducible[index];
+      if (!locked.has(clause)) {
         removed.add(clause);
       }
     }
+    // Relative decay fires after EVERY round, including protected-only or
+    // empty ones: the growing increment makes post-round bumps outweigh equal
+    // pre-round bumps. This lifetime aging is independent of the resettable
+    // output stats, so per-call measurement scopes are unaffected.
+    this.claInc *= 1 / 0.999;
     if (removed.size === 0) {
       return;
     }
@@ -651,6 +1176,7 @@ export class Solver {
     if (!Number.isInteger(targetLevel) || targetLevel < 0) {
       throw new Error('target decision level must be a non-negative integer');
     }
+    this.requeuePropagation();
     if (this.trailLim.length <= targetLevel) {
       return;
     }
@@ -664,6 +1190,7 @@ export class Solver {
       this.assigns[variable] = Value.UNSET;
       this.level[variable] = 0;
       this.reason[variable] = null;
+      this.rootBasis[variable] = 0;
       if (variable < this.cnf.numNamedVars) {
         this.unassignedNamed += 1;
         this.insertDecisionVariable(variable);
@@ -729,6 +1256,8 @@ export class Solver {
             restarts: this.stats.restarts - before.restarts,
             learnedClauses: this.stats.learnedClauses - before.learnedClauses,
             learnedClausesCurrent: this.stats.learnedClausesCurrent,
+            learnedLiterals: this.stats.learnedLiterals - before.learnedLiterals,
+            minimizedLiterals: this.stats.minimizedLiterals - before.minimizedLiterals,
           });
         }
       } finally {
@@ -738,41 +1267,112 @@ export class Solver {
   }
 
   solve(assumptions: readonly number[] = []): boolean {
+    this.startSearch(assumptions);
+    try {
+      const result = this.searchSlice(Number.POSITIVE_INFINITY);
+      if (result === 'paused') throw new Error('synchronous search cannot pause');
+      return result === 'sat';
+    } finally {
+      this.finishSearch();
+    }
+  }
+
+  // Internal lifecycle seam for finite-slice drivers. Restart epoch state is
+  // fresh per search (EMA histories are lifetime state and deliberately do
+  // not reset). An enumeration driver owns scheduling across model searches;
+  // standalone finite searches own their allowance until finishSearch().
+  startSearch(assumptions: readonly number[] = []): void {
+    this.finishSearch();
+    this.restartPolicy.resetSearch();
+    this.searchState = {
+      assumptions: [...assumptions],
+      phase: 'startup',
+      verdict: null,
+    };
+  }
+
+  finishSearch(): void {
+    this.requeuePropagation();
+    this.searchState = null;
+    if (!this.enumerationActive) this.scheduling = null;
+  }
+
+  private requeuePropagation(): void {
+    if (this.propagationCursor !== null) {
+      this.qhead = Math.min(this.qhead, this.propagationCursor.event);
+      this.propagationCursor = null;
+    }
+  }
+
+  private chargeWork(): void {
+    if (this.scheduling !== null) this.scheduling.remaining -= 1;
+  }
+
+  private workExhausted(): boolean {
+    return this.scheduling !== null && this.scheduling.remaining <= 0;
+  }
+
+  private validateQuantum(workQuantum: number): void {
+    if (
+      workQuantum !== Number.POSITIVE_INFINITY &&
+      (!Number.isSafeInteger(workQuantum) || workQuantum < 1)
+    ) {
+      throw new Error('work quantum must be a positive safe integer or Infinity');
+    }
+  }
+
+  searchSlice(workQuantum: number): SearchResult {
+    this.validateQuantum(workQuantum);
+    if (this.searchState === null) this.startSearch();
+    if (this.scheduling?.quantum !== workQuantum || this.workExhausted()) {
+      this.scheduling = { quantum: workQuantum, remaining: workQuantum };
+    }
+    const state = this.searchState as SearchState;
+    if (state.verdict !== null) return state.verdict;
     // Only base-formula conflicts are permanent UNSAT: an empty clause, or a
     // conflict found by root-level propagation, means the formula has no
     // model. A falsified per-call assumption (below) is context-local and
     // must never poison permanentUnsat.
     if (this.permanentUnsat || this.cnf.levelZeroUnsat) {
       this.permanentUnsat = true;
-      return false;
+      return (state.verdict = 'unsat');
     }
 
-    if (this.propagate() !== null) {
-      this.permanentUnsat = true;
-      return false;
-    }
-    if (this.enablePle && !this.eliminatePureLiterals()) {
-      this.permanentUnsat = true;
-      return false;
+    if (state.phase === 'startup') {
+      const initial =
+        workQuantum === Number.POSITIVE_INFINITY ? this.propagate() : this.propagateSlice(true);
+      if (initial === 'paused') return 'paused';
+      if (initial !== null) {
+        this.permanentUnsat = true;
+        return (state.verdict = 'unsat');
+      }
+      if (this.enablePle && !this.eliminatePureLiterals()) {
+        this.permanentUnsat = true;
+        return (state.verdict = 'unsat');
+      }
+      state.phase = 'search';
     }
 
     // Iterative CDCL (Design § Search: From DPLL to CDCL). A conflict learns
     // an asserting first-UIP clause and backjumps to its assertion level,
     // instead of undoing the last decision and re-exploring. Aux variables
     // are never branched on; SAT requires every named variable to be assigned.
-    // Count conflicts since the last budget boundary in base-sized blocks:
-    // this implements base * luby(index) without an unsafe Number product or
-    // a unit-increment counter that could stop advancing above 2^53. Ordinary
-    // backjumps do NOT reset the budget. State is per search, not shared stats.
-    let restartIndex = 1;
-    let blocksUntilRestart = luby(restartIndex);
-    let conflictsInBlock = 0;
+    // Restart timing is the extracted policy unit's decision from per-conflict
+    // samples; its epoch state is per search, never shared stats. Ordinary
+    // backjumps do NOT reset the epoch.
     while (true) {
-      const conflict = this.propagate();
+      if (this.workExhausted()) return 'paused';
+      const conflict =
+        state.phase === 'prefix'
+          ? null
+          : workQuantum === Number.POSITIVE_INFINITY
+            ? this.propagate()
+            : this.propagateSlice(true);
+      if (conflict === 'paused') return 'paused';
       if (conflict !== null) {
         if (this.trailLim.length === 0) {
           this.permanentUnsat = true;
-          return false;
+          return (state.verdict = 'unsat');
         }
         const { learned, backjumpLevel } = this.analyze(conflict);
         const assertingLit = learned.lits[0];
@@ -787,25 +1387,25 @@ export class Solver {
           );
         }
         this.stats.propagations += 1;
-        conflictsInBlock += 1;
-        if (conflictsInBlock === this.restartBaseConflicts) {
-          conflictsInBlock = 0;
-          blocksUntilRestart -= 1;
-          if (blocksUntilRestart === 0) {
-            // Finish learning/asserting BEFORE restarting, but do not propagate
-            // the assertion first: that could exceed this epoch's conflict
-            // budget. A root assertion stays queued (including unwatched units);
-            // a conditional assertion above root is undone, never promoted.
-            const restarted = this.trailLim.length > 0;
-            this.cancelUntil(0);
-            if (restarted) {
-              this.stats.restarts += 1;
-            }
-            // Consume an exhausted epoch even if the normal backjump already
-            // reached root. Do not count that no-op as an additional restart.
-            restartIndex += 1;
-            blocksUntilRestart = luby(restartIndex);
+        // The policy observes this conflict's learned LBD and the trail as it
+        // stands AFTER the transaction (assertion enqueued) and BEFORE any
+        // restart cancellation — never the emptied post-cancel trail.
+        const verdict = this.restartPolicy.onConflict({
+          lbd: learned.lbd,
+          trailLength: this.trail.length,
+          atRoot: this.trailLim.length === 0,
+        });
+        if (verdict.kind === 'restart') {
+          // Finish learning/asserting BEFORE restarting, but do not propagate
+          // the assertion first: that could exceed this epoch's conflict
+          // budget. A root assertion stays queued (including unwatched units);
+          // a conditional assertion above root is undone, never promoted.
+          this.cancelUntil(0);
+          if (verdict.actual) {
+            this.stats.restarts += 1;
           }
+          // A consumed epoch whose backjump already reached root is a no-op
+          // cancellation, never an additional restart.
         }
         // Do not reduce at registration: the learned clause must first become
         // the assertion's reason. After an optional restart, only reasons that
@@ -813,6 +1413,7 @@ export class Solver {
         if (this.learnedSinceReduction >= this.learnedClauseReductionThreshold) {
           this.reduceLearnedClauses();
         }
+        this.chargeWork();
       } else {
         // MiniSat assumption prefix (Design § Search). The CURRENT level is
         // the cursor, so backjumps and restarts automatically replay anything
@@ -820,11 +1421,14 @@ export class Solver {
         // A false assumption is call-local UNSAT, even if falsified at root;
         // it is NOT a base conflict and must never poison permanentUnsat.
         let assumptionEnqueued = false;
-        while (this.trailLim.length < assumptions.length) {
-          const lit = assumptions[this.trailLim.length];
+        state.phase = 'prefix';
+        while (this.trailLim.length < state.assumptions.length) {
+          if (this.workExhausted()) return 'paused';
+          const lit = state.assumptions[this.trailLim.length];
           const value = litValue(lit, this.assigns);
+          this.chargeWork();
           if (value === Value.FALSE) {
-            return false;
+            return (state.verdict = 'unsat');
           }
           this.newDecisionLevel();
           if (value === Value.UNSET) {
@@ -834,6 +1438,7 @@ export class Solver {
           }
         }
         if (assumptionEnqueued) {
+          state.phase = 'search';
           // Propagate this assumption before advancing the prefix, including
           // after the last assumption. Assumptions are not heuristic decisions
           // or propagations; their resulting implications ARE propagations.
@@ -842,13 +1447,16 @@ export class Solver {
         // Pending assumptions must be checked even on an already-total root
         // model, not just when the heuristic would otherwise need a decision.
         if (this.namedVariablesAssigned()) {
-          return true;
+          return (state.verdict = 'sat');
         }
+        if (this.workExhausted()) return 'paused';
         const [variable, preferTrue] = this.pickDecision();
         const lit = variable * 2 + (preferTrue ? 0 : 1);
         this.newDecisionLevel();
         this.enqueue(lit, null);
         this.stats.decisions += 1;
+        this.chargeWork();
+        state.phase = 'search';
       }
     }
   }
@@ -892,13 +1500,31 @@ export class Solver {
     }
     const first = clause.lits[0];
     const second = clause.lits[1];
+    if (clause.lits.length === 2) {
+      // Binary clauses live on the dedicated lists (implicit propagation);
+      // their watches never relocate, so no blocker/twin tracking is needed.
+      const firstList = this.binaryWatches[first];
+      const secondList = this.binaryWatches[second];
+      if (firstList === undefined || secondList === undefined) {
+        throw new Error(`clause contains out-of-range watched literal: ${first}, ${second}`);
+      }
+      firstList.push({ clause, other: second });
+      secondList.push({ clause, other: first });
+      return;
+    }
     const firstWatchList = this.watches[first];
     const secondWatchList = this.watches[second];
     if (firstWatchList === undefined || secondWatchList === undefined) {
       throw new Error(`clause contains out-of-range watched literal: ${first}, ${second}`);
     }
-    firstWatchList.push(clause);
-    secondWatchList.push(clause);
+    // Cross-linked twin entries: from each list the blocker is the OTHER
+    // watched literal, so either list can later keep this one's blocker in
+    // step when its own watch relocates (O(1), no list scan).
+    const entry: WatchEntry = { clause, blocker: second, twin: null };
+    const twin: WatchEntry = { clause, blocker: first, twin: entry };
+    entry.twin = twin;
+    firstWatchList.push(entry);
+    secondWatchList.push(twin);
   }
 
   private detachClause(clause: Clause): void {
@@ -907,8 +1533,18 @@ export class Solver {
     }
     for (let slot = 0; slot < 2; slot += 1) {
       const lit = clause.lits[slot];
+      if (clause.lits.length === 2) {
+        const binaryList = this.binaryWatches[lit];
+        const binaryIndex = binaryList?.findIndex((entry) => entry.clause === clause) ?? -1;
+        if (binaryList === undefined || binaryIndex < 0) {
+          throw new Error(`clause is missing its watch on literal: ${lit}`);
+        }
+        binaryList[binaryIndex] = binaryList[binaryList.length - 1];
+        binaryList.pop();
+        continue;
+      }
       const list = this.watches[lit];
-      const index = list?.indexOf(clause) ?? -1;
+      const index = list?.findIndex((entry) => entry.clause === clause) ?? -1;
       if (list === undefined || index < 0) {
         throw new Error(`clause is missing its watch on literal: ${lit}`);
       }
@@ -947,13 +1583,19 @@ export class Solver {
   // reports it exactly once. Assumption-assigned variables have no reason
   // clause, and assumptions map one literal per name so they cannot
   // contradict each other — a null reason here is a genuine invariant breach.
+  // A newly enqueued root assumption seeds its assumption-taint bit; an
+  // already-derived assignment keeps its existing (possibly base) basis.
   private enqueueAssumptions(assumptions: VariableAssignments | undefined): void {
     for (const lit of this.translateAssumptions(assumptions)) {
+      const variable = varOf(lit);
+      const wasUnset = this.assigns[variable] === Value.UNSET;
       if (!this.enqueue(lit, null)) {
-        this.startupConflict ??= this.reason[varOf(lit)];
+        this.startupConflict ??= this.reason[variable];
         if (this.startupConflict === null) {
           throw new Error('contradictory assumptions without an explaining clause');
         }
+      } else if (wasUnset) {
+        this.rootBasis[variable] |= ROOT_BASIS_ASSUMPTION;
       }
     }
   }
@@ -1000,6 +1642,10 @@ export class Solver {
         if (!this.enqueue(lit, null)) {
           throw new Error(`pure-literal enqueue contradicted variable ${variable}`);
         }
+        // A PLE pin satisfies every still-unsatisfied occurrence of the
+        // variable, so its taint can never enter an implication antecedent;
+        // the bit marks the reason-null leaf itself.
+        this.rootBasis[variable] |= ROOT_BASIS_PLE;
         this.stats.propagations += 1;
         assignedPureLiteral = true;
       }
@@ -1070,6 +1716,35 @@ export class Solver {
       }
     }
     throw new Error('decision heap exhausted with unassigned named variables');
+  }
+
+  // The single LBD metric (MiniSat computeLBD): the number of DISTINCT
+  // NONZERO assignment levels among the clause's literals. Learning-time
+  // scoring and dynamic tightening share this exact computation so the two
+  // uses can never drift apart; level zero never contributes.
+  private computeClauseLbd(lits: readonly number[]): number {
+    const levels = new Set<number>();
+    for (const lit of lits) {
+      const level = this.level[varOf(lit)];
+      if (level !== 0) {
+        levels.add(level);
+      }
+    }
+    return levels.size;
+  }
+
+  private bumpClauseActivity(clause: Clause): void {
+    clause.activity += this.claInc;
+    // The rescale check belongs IN the bump, not after analyze or the decay:
+    // later bumps in this SAME analysis must use the rescaled increment, and
+    // rescaling the increment is mandatory — omitting it distorts all future
+    // relative bump weights (the variable-side scheme argues likewise).
+    if (clause.activity > 1e100) {
+      for (const other of this.clauses) {
+        other.activity *= 1e-100;
+      }
+      this.claInc *= 1e-100;
+    }
   }
 
   private bumpVariableActivity(variable: number): void {
@@ -1206,12 +1881,13 @@ export class Solver {
     const watchCounts = new Map<Clause, number>();
     for (let lit = 0; lit < this.watches.length; lit += 1) {
       const members = new Set<Clause>();
-      for (const clause of this.watches[lit]) {
+      for (const entry of this.watches[lit]) {
+        const clause = entry.clause;
         if (!live.has(clause)) {
           throw new Error('watch invariant violated: clause is not live');
         }
         if (
-          clause.lits.length < 2 ||
+          clause.lits.length < 3 ||
           (clause.lits[0] !== lit && clause.lits[1] !== lit) ||
           members.has(clause)
         ) {
@@ -1219,10 +1895,51 @@ export class Solver {
         }
         members.add(clause);
         watchCounts.set(clause, (watchCounts.get(clause) ?? 0) + 1);
+        // Blocker parity audit: the cached blocker is the clause's current
+        // OTHER watch, and the cross-linked twin (holding this literal's
+        // other-list entry) tracks it in the opposite direction.
+        const other = clause.lits[0] === lit ? clause.lits[1] : clause.lits[0];
+        if (
+          entry.blocker !== other ||
+          entry.twin === null ||
+          entry.twin.clause !== clause ||
+          entry.twin.blocker !== lit ||
+          entry.twin.twin !== entry
+        ) {
+          throw new Error('watch invariant violated: stale blocker or twin link');
+        }
+      }
+    }
+    // Dedicated binary lists: each binary clause appears exactly twice, once
+    // per literal, with `other` naming the opposite literal.
+    const binaryCounts = new Map<Clause, number>();
+    for (let lit = 0; lit < this.binaryWatches.length; lit += 1) {
+      const members = new Set<Clause>();
+      for (const entry of this.binaryWatches[lit]) {
+        const clause = entry.clause;
+        if (!live.has(clause)) {
+          throw new Error('binary watch invariant violated: clause is not live');
+        }
+        const other = clause.lits[0] === lit ? clause.lits[1] : clause.lits[0];
+        if (
+          clause.lits.length !== 2 ||
+          (clause.lits[0] !== lit && clause.lits[1] !== lit) ||
+          entry.other !== other ||
+          members.has(clause)
+        ) {
+          throw new Error('binary watch invariant violated: incorrect or duplicate membership');
+        }
+        members.add(clause);
+        binaryCounts.set(clause, (binaryCounts.get(clause) ?? 0) + 1);
       }
     }
     for (const clause of this.clauses) {
-      if ((watchCounts.get(clause) ?? 0) !== (clause.lits.length < 2 ? 0 : 2)) {
+      const expectedLong = clause.lits.length >= 3 ? 2 : 0;
+      const expectedBinary = clause.lits.length === 2 ? 2 : 0;
+      if (
+        (watchCounts.get(clause) ?? 0) !== expectedLong ||
+        (binaryCounts.get(clause) ?? 0) !== expectedBinary
+      ) {
         throw new Error('watch invariant violated: missing clause watch');
       }
     }

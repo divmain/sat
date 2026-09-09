@@ -191,6 +191,8 @@ describe('getSolution', () => {
           restarts: 999,
           learnedClauses: 999,
           learnedClausesCurrent: 999,
+          learnedLiterals: 999,
+          minimizedLiterals: 999,
         };
         const model = getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE }, stats });
 
@@ -286,6 +288,8 @@ describe('getSolution', () => {
         restarts: 999,
         learnedClauses: 999,
         learnedClausesCurrent: 999,
+        learnedLiterals: 999,
+        minimizedLiterals: 999,
       };
       const model = getSolution(and('a', 'b'), { stats });
       assert.deepStrictEqual(model, { a: Value.TRUE, b: Value.TRUE });
@@ -485,8 +489,9 @@ describe('getAllSolutions', () => {
     });
 
     it('returns [] immediately for a levelZeroUnsat formula', () => {
-      // and(or(), 'a') compiles to the empty clause plus a unit clause:
-      // levelZeroUnsat short-circuits before any solve.
+      // and(or(), 'a') constant-folds to the empty clause (or() annihilates
+      // the conjunction; 'a' stays in the named universe), so levelZeroUnsat
+      // short-circuits before any solve.
       assert.deepStrictEqual(getAllSolutions(and(or(), 'a')), []);
     });
 
@@ -554,6 +559,8 @@ describe('getAllSolutions', () => {
         restarts: 999,
         learnedClauses: 999,
         learnedClausesCurrent: 999,
+        learnedLiterals: 999,
+        minimizedLiterals: 999,
       };
       const models = getAllSolutions(or('a', 'b'), { stats });
       assert.strictEqual(models.length, 3);

@@ -2,9 +2,19 @@ import assert from 'node:assert';
 import { describe, it } from 'node:test';
 import { compile, isNeg, litValue, negLit, posLit, varOf } from '../src/compile.js';
 import type { Clause, CompiledCnf } from '../src/compile.js';
-import { Value } from '../src/expr.js';
+import { and, implies, not, or, Value } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
-import { cnfToExpr, mulberry32, phpCnf, random3Cnf, referenceModels } from './helpers';
+import {
+  assertWatchListsSurvive,
+  cnfToExpr,
+  expressionValue,
+  mulberry32,
+  phpCnf,
+  random3Cnf,
+  referenceModels,
+  snapshotWatches,
+  watchesClause,
+} from './helpers';
 
 function cnf(names: string[], clauses: number[][]): CompiledCnf {
   assert.deepEqual(names, [...names].sort(), 'fixtures use sorted named-variable indices');
@@ -68,17 +78,24 @@ function assertReasonGraph(solver: Solver, conflict?: Clause): void {
 
 function assertWatchMembership(solver: Solver): void {
   for (const list of solver.watches) {
+    assert.strictEqual(new Set(list).size, list.length, 'no repeated entry within a watch list');
+    assert.ok(list.every((entry) => solver.clauses.includes(entry.clause)));
+  }
+  for (const list of solver.binaryWatches) {
     assert.strictEqual(
       new Set(list).size,
       list.length,
-      'no repeated reference within a watch list',
+      'no repeated entry within a binary watch list',
     );
-    assert.ok(list.every((clause) => solver.clauses.includes(clause)));
+    assert.ok(list.every((entry) => solver.clauses.includes(entry.clause)));
   }
   for (const clause of solver.clauses) {
     const watched: number[] = [];
     for (let lit = 0; lit < solver.watches.length; lit += 1) {
-      if (solver.watches[lit].includes(clause)) {
+      if (watchesClause(solver.watches[lit], clause)) {
+        watched.push(lit);
+      }
+      if (solver.binaryWatches[lit].some((entry) => entry.clause === clause)) {
         watched.push(lit);
       }
     }
@@ -147,9 +164,14 @@ class TracedSolver extends Solver {
 
   override cancelUntil(level: number): void {
     const from = this.trailLim.length;
-    const watches = this.watches.map((list) => [...list]);
+    const watches = snapshotWatches(this.watches, this.binaryWatches);
     super.cancelUntil(level);
-    assert.deepEqual(this.watches, watches, 'cancellation must not rebuild watches');
+    assertWatchListsSurvive(
+      this.watches,
+      this.binaryWatches,
+      watches,
+      'cancellation must not rebuild watches',
+    );
     this.jumps.push({ from, to: this.trailLim.length, retained: [...this.trail] });
   }
 }
@@ -276,11 +298,16 @@ describe('Solver first-UIP conflict analysis', () => {
       assertWatchMembership(solver);
     }
 
-    const watches = solver.watches.map((list) => [...list]);
+    const watches = snapshotWatches(solver.watches, solver.binaryWatches);
     solver.cancelUntil(1);
     assert.strictEqual(solver.trailLim.length, 1, 'backjump 4→1 skips levels 2 and 3');
     assert.deepEqual(solver.trail, [posLit(2)]);
-    assert.deepEqual(solver.watches, watches);
+    assertWatchListsSurvive(
+      solver.watches,
+      solver.binaryWatches,
+      watches,
+      'backjump does not rebuild watches',
+    );
     assert.strictEqual(solver.enqueue(negLit(4), F), true);
     assert.strictEqual(solver.propagate(), null);
     assert.strictEqual(solver.level[4], 1);
@@ -326,8 +353,12 @@ describe('Solver first-UIP conflict analysis', () => {
 describe('Solver learned clauses and non-chronological search', () => {
   it('performs a genuine eager-search backjump 4→1, stopping before the decision UIP', () => {
     // Unlike ticket (b), v1 alone does not imply ¬x2 here. At level 4, x1
-    // implies x2, then (¬x2∨t) and (¬x2∨¬t∨¬v1) conflict. Resolving t gives
-    // (¬x2∨¬v1), whose first UIP is implied x2 and whose assertion level is 1.
+    // implies x2; the dedicated binary lists drain FIRST, so the binary
+    // (¬x2∨t) implies t=TRUE before the long (¬x2∨¬t∨¬v1) is visited and
+    // conflicts. Resolving t's reason (the binary) still gives (¬x2∨¬v1),
+    // whose first UIP is implied x2 and whose assertion level is 1 — the
+    // learned clause and backjump are unchanged; only t's implied polarity
+    // (and thereby its saved phase) differs from the combined-list order.
     const base = cnf(
       ['free1', 'free2', 't', 'v1', 'x1', 'x2'],
       [
@@ -374,12 +405,15 @@ describe('Solver learned clauses and non-chronological search', () => {
       posLit(0),
       posLit(1),
       posLit(4),
-      negLit(2),
+      posLit(2),
       posLit(0),
       posLit(1),
     ]);
     // Four attempted decisions before learning, then t and the two free
-    // variables; implications x2,t + asserting ¬x2 + implied ¬x1, no flip.
+    // variables; implications x2,t + asserting ¬x2 + implied ¬x1. t's saved
+    // phase is TRUE (its binary implication), so the post-backjump heap
+    // decision re-picks t as TRUE. The two-literal learned clause has no
+    // removable literal (¬v1 is a decision).
     assert.deepEqual(solver.stats, {
       decisions: 7,
       propagations: 4,
@@ -387,6 +421,8 @@ describe('Solver learned clauses and non-chronological search', () => {
       restarts: 0,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 2,
+      minimizedLiterals: 0,
     });
     assertReasonGraph(solver);
     assertWatchMembership(solver);
@@ -494,6 +530,8 @@ describe('Solver learned clauses and non-chronological search', () => {
     assert.deepEqual(solver.model(), { a: Value.TRUE, t: Value.TRUE, x: Value.FALSE });
     assert.deepEqual(solver.decisions, [posLit(2), posLit(1)]);
     assert.deepEqual(Array.from(solver.activity), [1, 1, 1], 'root antecedent a is bumped too');
+    // (¬x∨¬a) is already minimal: the tainted root literal is poison for
+    // minimization and the asserting literal is never a candidate.
     assert.deepEqual(solver.stats, {
       decisions: 2,
       propagations: 2,
@@ -501,6 +539,8 @@ describe('Solver learned clauses and non-chronological search', () => {
       restarts: 0,
       learnedClauses: 1,
       learnedClausesCurrent: 1,
+      learnedLiterals: 2,
+      minimizedLiterals: 0,
     });
     assertWatchMembership(solver);
   });
@@ -544,5 +584,182 @@ describe('Solver learned clauses and non-chronological search', () => {
       assertWatchMembership(solver);
     }
     assert.ok(learnedCount > 0, 'the consequence checks must exercise actual learning');
+  });
+});
+
+describe('Solver learned-clause minimization and root provenance', () => {
+  it('removes a known-redundant literal, counted by the analysis-work counters', () => {
+    // u is implied by a alone, so in the learned clause (¬a∨¬u∨¬b) the
+    // literal ¬u is redundant: its reason's antecedent ¬a is already in the
+    // clause. Minimization resolves it away, leaving (¬a∨¬b).
+    const base = cnf(
+      ['a', 'b', 'u', 'z1', 'z2'],
+      [
+        [negLit(0), posLit(2)],
+        [negLit(1), posLit(3)],
+        [negLit(1), posLit(4)],
+        [negLit(0), negLit(2), negLit(3), negLit(4)],
+      ],
+    );
+    const solver = new Solver(base);
+    decide(solver, posLit(0));
+    assert.strictEqual(solver.enqueue(posLit(2), base.clauses[0]), true);
+    decide(solver, posLit(1));
+    assert.strictEqual(solver.enqueue(posLit(3), base.clauses[1]), true);
+    assert.strictEqual(solver.enqueue(posLit(4), base.clauses[2]), true);
+    const conflict = base.clauses[3];
+    assertReasonGraph(solver, conflict);
+
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    assert.deepEqual(learned.lits, [negLit(1), negLit(0)]);
+    assert.strictEqual(backjumpLevel, 1);
+    assert.strictEqual(learned.lbd, 2);
+    assertEntailed(base, learned);
+    assert.strictEqual(solver.stats.learnedLiterals, 2, 'post-minimization literals produced');
+    assert.strictEqual(solver.stats.minimizedLiterals, 1, 'the redundant ¬u was removed');
+  });
+
+  it('keeps a literal whose only explanation passes through a tainted root (minimization poison)', () => {
+    // Same shape as the known-redundant fixture, but u's reason reaches the
+    // ASSUMPTION a at level zero. Resolving ¬u away would silently drop the
+    // a-dependency, so minimization must refuse: tainted roots are poison.
+    const base = cnf(
+      ['a', 'b', 'd', 'u', 'z1', 'z2'],
+      [
+        [negLit(0), negLit(2), posLit(3)],
+        [negLit(1), posLit(4)],
+        [negLit(1), posLit(5)],
+        [negLit(2), negLit(3), negLit(4), negLit(5)],
+      ],
+    );
+    const solver = new Solver(base, { assumptions: { a: Value.TRUE } });
+    assert.strictEqual(solver.rootBasis[0], 1);
+    decide(solver, posLit(2));
+    assert.strictEqual(solver.enqueue(posLit(3), base.clauses[0]), true);
+    decide(solver, posLit(1));
+    assert.strictEqual(solver.enqueue(posLit(4), base.clauses[1]), true);
+    assert.strictEqual(solver.enqueue(posLit(5), base.clauses[2]), true);
+    const conflict = base.clauses[3];
+    assertReasonGraph(solver, conflict);
+
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    // (¬b∨¬d∨¬u): without the poison rule, recursive minimization would
+    // resolve ¬u through (¬a∨¬d∨u) and drop the a-dependent literal.
+    assert.deepEqual(learned.lits, [negLit(1), negLit(2), negLit(3)]);
+    assert.strictEqual(backjumpLevel, 1);
+    assertEntailed(base, learned);
+    assert.strictEqual(solver.stats.learnedLiterals, 3);
+    assert.strictEqual(solver.stats.minimizedLiterals, 0, 'poisoned tainted root kept ¬u');
+  });
+
+  it('drops only BASE-DERIVED root literals, never assumption-tainted ones', () => {
+    // Unit u is base-derived (rootBasis 0); a is an assumption (rootBasis 1).
+    // Both sit at level zero in the same conflict: the learned clause drops
+    // ¬u but must retain ¬a.
+    const base = cnf(
+      ['a', 'b', 'u', 'z'],
+      [[posLit(2)], [negLit(1), posLit(3)], [negLit(0), negLit(1), negLit(2), negLit(3)]],
+    );
+    const solver = new Solver(base, { assumptions: { a: Value.TRUE } });
+    assert.strictEqual(solver.rootBasis[2], 0, 'unit clause is base-derived');
+    assert.strictEqual(solver.rootBasis[0], 1, 'assumption leaf is tainted');
+    decide(solver, posLit(1));
+    assert.strictEqual(solver.enqueue(posLit(3), base.clauses[1]), true);
+    const conflict = base.clauses[2];
+    assertReasonGraph(solver, conflict);
+
+    const { learned, backjumpLevel } = solver.analyze(conflict);
+    // (¬b∨¬a): ¬u resolved away as a base consequence; ¬a retained.
+    assert.deepEqual(learned.lits, [negLit(1), negLit(0)]);
+    assert.strictEqual(backjumpLevel, 0, 'the only other literal is the retained root literal');
+    assert.strictEqual(learned.lbd, 1, 'the retained root literal does not inflate LBD');
+    assertEntailed(base, learned);
+    assert.strictEqual(solver.stats.learnedLiterals, 2);
+    assert.strictEqual(
+      solver.stats.minimizedLiterals,
+      0,
+      'first-UIP, not minimization, dropped ¬u',
+    );
+  });
+
+  it('tracks tainted implications and mixed ancestry in the root reason graph', () => {
+    // u is a base unit; a is an assumption. m is implied at root by
+    // (¬u∨¬a∨m) — MIXED base+assumption ancestry — and n is implied by m
+    // alone. p and x are scoped PLE pins. Every root implication must keep a
+    // non-null reason: taint never turns an implication into an assumption
+    // leaf, and no caller assumption is invented for implied variables.
+    const expr = and('u', or(not('u'), not('a'), 'm'), implies('m', 'n'), or('p', 'x'));
+    const base = compile(expr);
+    const solver = new Solver(base, { assumptions: { a: Value.TRUE }, enablePle: true });
+    assert.strictEqual(solver.solve(), true);
+    assert.strictEqual(solver.stats.decisions, 0, 'everything is forced at root');
+    assert.strictEqual(expressionValue(expr, solver.model()), Value.TRUE);
+
+    const index = (name: string) => {
+      const variable = base.nameToIndex.get(name);
+      assert.ok(variable !== undefined);
+      return variable;
+    };
+    const expectBasis = (name: string, basis: number, reasonNull: boolean) => {
+      const variable = index(name);
+      assert.strictEqual(solver.level[variable], 0, `${name} is a root assignment`);
+      assert.strictEqual(solver.rootBasis[variable], basis, `${name} provenance`);
+      assert.strictEqual(solver.reason[variable] === null, reasonNull, `${name} reason shape`);
+    };
+    expectBasis('u', 0, false);
+    expectBasis('a', 1, true);
+    expectBasis('m', 1, false);
+    expectBasis('n', 1, false);
+    expectBasis('p', 2, true);
+    expectBasis('x', 2, true);
+    // The mixed antecedents are genuine: m's reason mentions both the base
+    // unit u and the assumption a.
+    const mReason = solver.reason[index('m')];
+    assert.ok(mReason !== null);
+    assert.ok(mReason.lits.includes(negLit(index('u'))));
+    assert.ok(mReason.lits.includes(negLit(index('a'))));
+    // A core walk collecting reason-null assumption leaves finds exactly the
+    // supplied assumption set — tainted implications are not collectable.
+    const collectable: string[] = [];
+    for (let variable = 0; variable < base.numVars; variable += 1) {
+      if (
+        solver.level[variable] === 0 &&
+        solver.reason[variable] === null &&
+        solver.rootBasis[variable] === 1
+      ) {
+        collectable.push(base.indexToName[variable]);
+      }
+    }
+    assert.deepEqual(collectable, ['a']);
+  });
+
+  it('retains a learnable dependency on the assumption in the probe witness', () => {
+    // Regression: (¬a∨x∨t)∧(¬a∨x∨¬t)∧(¬x∨t)∧(¬x∨¬t) under a=TRUE. The first
+    // conflict learns (¬a∨t), NOT the unit (t): unconditional root dropping
+    // would erase the a-dependency that core extraction (Phase 3) needs —
+    // the walk from the terminal root conflict must reach the assumption.
+    const base = cnf(
+      ['a', 't', 'x'],
+      [
+        [negLit(0), posLit(1), posLit(2)],
+        [negLit(0), posLit(2), negLit(1)],
+        [negLit(2), posLit(1)],
+        [negLit(2), negLit(1)],
+      ],
+    );
+    const solver = new Solver(base, { assumptions: { a: Value.TRUE } });
+    assert.strictEqual(solver.solve(), false, 'base ∧ a=TRUE is UNSAT');
+    const learned = solver.clauses.find((clause) => clause.learned);
+    assert.ok(learned !== undefined, 'a clause was learned before the terminal conflict');
+    assert.deepEqual(
+      [...learned.lits].sort((left, right) => left - right),
+      [negLit(0), posLit(1)],
+      'the learned (¬a∨t) keeps its assumption dependency',
+    );
+    assertEntailed(base, learned);
+    // The asserting root assignment is itself tainted through that reason.
+    assert.strictEqual(solver.reason[1], learned);
+    assert.strictEqual(solver.rootBasis[1], 1, 't is a tainted root implication, not a leaf');
+    assert.strictEqual(solver.stats.minimizedLiterals, 0, 'the tainted root literal is poison');
   });
 });
