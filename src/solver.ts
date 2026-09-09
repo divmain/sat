@@ -7,8 +7,7 @@
 // selectable Luby schedule), and periodic learned-clause reduction under the
 // pinned two-tier (glue/reducible) retention policy with decayed clause
 // activity and dynamic LBD tightening.
-// See Design § Solver Core State and Invariants and § Search: From DPLL to
-// CDCL.
+// See Design § Solver Core End-State.
 
 import { compileIncremental, isNeg, litValue, neg, normalizeClauseLits, varOf } from './compile.js';
 import type { Clause, CompiledCnf } from './compile.js';
@@ -2026,7 +2025,7 @@ export class Solver {
       state.phase = 'search';
     }
 
-    // Iterative CDCL (Design § Search: From DPLL to CDCL). A conflict learns
+    // Iterative CDCL (Design § Solver Core End-State). A conflict learns
     // an asserting first-UIP clause and backjumps to its assertion level,
     // instead of undoing the last decision and re-exploring. Aux variables
     // are never branched on; SAT requires every named variable to be assigned.
@@ -2096,9 +2095,10 @@ export class Solver {
         }
         this.chargeWork();
       } else {
-        // MiniSat assumption prefix (Design § Search). The CURRENT level is
-        // the cursor, so backjumps and restarts automatically replay anything
-        // they popped. Already-true assumptions still consume dummy levels.
+        // MiniSat assumption prefix (Design § Solver Core End-State). The
+        // CURRENT level is the cursor, so backjumps and restarts replay
+        // anything they popped automatically. Already-true assumptions still
+        // consume dummy levels.
         // A false assumption is call-local UNSAT, even if falsified at root;
         // it is NOT a base conflict and must never poison permanentUnsat.
         let assumptionEnqueued = false;
@@ -2438,9 +2438,10 @@ export class Solver {
     }
   }
 
-  // Pure-literal elimination, enabled only for single-shot getSolution
-  // (Design § Solver Core State and Invariants): a variable occurring in
-  // exactly one polarity among the still-unsatisfied clauses can be pinned to
+  // Pure-literal elimination, enabled only for the single-shot
+  // getSolution/getSolutionAsync entry points (Design § Design Principles
+  // and Hard Constraints): a variable occurring in exactly one polarity
+  // among the still-unsatisfied clauses can be pinned to
   // the other polarity without affecting satisfiability. Pins are enqueued at
   // root, which is why this mode stays off for enumeration and incremental
   // solving. Bitmask: bit 1 = positive occurrence, bit 2 = negative
@@ -2508,8 +2509,8 @@ export class Solver {
   // Select the next decision: the `variablePriority` hook first (named,
   // unassigned, defensively revalidated), else VSIDS with the saved phase.
   // Ties break by index and the default phase is FALSE, so branching is
-  // deterministic. Aux variables are never decided (Design § Branching
-  // Heuristics).
+  // deterministic. Aux variables are never decided (Design § Design
+  // Principles and Hard Constraints: named-only termination).
   private pickDecision(): [number, boolean] {
     if (this.variablePriority !== undefined) {
       // Hook inputs cover the CURRENT named universe, including variables

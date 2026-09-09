@@ -3,7 +3,7 @@
   "generatedBy": "test/bench-v3.ts (npm run bench)",
   "mode": "gates",
   "context": {
-    "head": "dbbc3a2bb753eaf87ba607649f680fec7b9edc12",
+    "head": "91e61aa8011f27cde44234fa21646c66cc5ca660",
     "note": "Machine-generated data and comparison tables only; the narrative lives in the committed test/v3-benchmark-review.md, never rewritten by harness runs. Timing is console/Markdown information only."
   },
   "replay": {
@@ -31,12 +31,12 @@
     "implementation": {
       "sourceSha256": {
         "biome.json": "527bab36084d7ab8a09e894d5e79b469d26e273544e8fbecbe204eaa53b2e784",
-        "package-lock.json": "583b6a3fdf8552b86e12254ee4547aa59c751a9e00e35e8799e0a006f13dd789",
-        "package.json": "1f9e156493d27f853e260b89c8a2e7202bc7571d4cdf541ec880332d4de37292",
-        "src/compile.ts": "4040969840b42ae97d0101d78e589ebd9d540ca4adb810fa7cff7ae7955a12dc",
+        "package-lock.json": "4b859f3f4d2529e0f9f63d61f936c5e6133df35b192389b6fe4a02f9835097a0",
+        "package.json": "93e6beec1c98651333c2b5d97436335721e2f2a670c29188f0240c446b1b6ea1",
+        "src/compile.ts": "f709c6d45578b8279e40427429de57fdda7bd1d6689740fb0df18cc8fb2a60c0",
         "src/expr.ts": "9b08fb95708a1065c2f13a41c095829c166a1fd8ebc634761bb5019ec524946d",
-        "src/index.ts": "102d0d804d03e836f9f5a645e665c660790d95024474938aed500cce8b594fec",
-        "src/solver.ts": "48d2d20740b6b1c14fe957731e2a5a83369432262850ac4b30759210968ba9b2",
+        "src/index.ts": "074dc31a52e4072edc2e8c6f97bdf60adfb0abd8626a1b0f19a23eda4d5cb62d",
+        "src/solver.ts": "682d81763a32622b8ce426961e8a2dfe560bb5b78526a8e26e548ada0bb0471b",
         "test/bench-evidence.ts": "3ebed5329c8e0ecf79d8eb3110c029d8a331c9fc0b6c979347ec880255e854c3",
         "test/bench-v3-adapter.ts": "3d5bb898640fd611f78eecb7b9492e7ad97d6ef8dec058d297bb442cccef6acf",
         "test/bench-v3-corpus.ts": "692949472ab8b52d45636d616d10ff80d24292c4f5a59edc59930f3d77075871",

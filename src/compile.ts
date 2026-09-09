@@ -5,8 +5,8 @@
 // once per formula or staged delta, never per search node. Literal encoding
 // is MiniSat-style (lit = 2*v + isNeg), so negation is free and `not` nodes
 // allocate nothing. The compiler produces literals; solver.ts imports these
-// helpers — never the other way around. See Design § Formula Frontend and
-// Tseitin Compilation.
+// helpers — never the other way around. See Design § Compiler and
+// Encodings End-State.
 //
 // Compilation runs in two passes over a compilation-scoped canonical form
 // (Design § Compiler and Encodings End-State):
@@ -315,7 +315,7 @@ export interface CompiledDelta {
 }
 
 // Compile `expr` to CNF via the Tseitin transformation. Two rules eliminate
-// gratuitous gates (see Design § Formula Frontend):
+// gratuitous gates (see Design § Compiler and Encodings End-State):
 //
 //   1. Free negation: compile(not(e)) = neg(compile(e)) — no aux variable
 //      and no clauses are ever allocated for `not`.

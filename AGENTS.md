@@ -2,9 +2,9 @@
 
 `@divmain/sat` — a zero-dependency SAT solver library (TypeScript, ESM, Node).
 
-## v2 release: read the plan first
+## v3 release: read the plan first
 
-The v2 MiniSat-style CDCL core and all three public solving APIs are implemented. Release/final acceptance is tracked by **Janus plan `plan-7748`** — the full design doc lives at `.janus/plans/plan-7748.md`. Code comments referencing "Design § ..." point into that file. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. The quarantined v1 solver (`src/legacy.ts`) was deleted at the API-rewire task (task-e476); do not resurrect v1 entry points.
+The v3 CDCL core and the full 3.0 public API (rich results, conflict budgets, async solving, incremental `add()`, cardinality constraints) are implemented. Release/final acceptance is tracked by **Janus plan `plan-d285`** — the full design doc lives at `.janus/plans/plan-d285.md`, and it supersedes the completed v2 plan `plan-7748` (release-validated at `ae1a4fe`, kept for historical reference). Code comments referencing "Design § ..." point into `plan-d285.md`. Work items are Janus tickets (`.janus/items/`); check plan status before picking up work, and keep every task checkpoint green. The quarantined v1 solver (`src/legacy.ts`) was deleted at the v2 API-rewire task (task-e476); do not resurrect v1 entry points.
 
 Module layout:
 
@@ -62,5 +62,5 @@ Both the full test suite and the benchmarks authenticate Git history. Use a full
 - **No wall-clock assertions in unit tests** — performance is proven via `SolverStats` oracles (e.g. `decisions === 0`, `learnedClauses > 0`), never timers.
 - Keep fixed fixtures/property batteries/stress sizes/conflict caps; the hypergraph oracle is **2 decisions, 16 propagations, 0 conflicts** (batch PLE leaves two ordinary named don't-cares), not zero decisions. PHP(7,6)/(8,7) benchmark caps remain **7230/36270**; a budget exception is a failure, never UNSAT evidence. Preserve frozen Phase-2/3 artifacts and expose regressions honestly.
 - Determinism: sorted variable indexing (sorted initially, and sorted within each `add()` batch appended after all existing indices — deterministic but history-dependent), index-ordered tie-breaking, fixed default polarities.
-- Pure-literal elimination is scoped to single-shot `getSolution` only — enabling it for enumeration or incremental solving is unsound (worked counterexamples in Design § Solver Core).
+- Pure-literal elimination is scoped to single-shot `getSolution`/`getSolutionAsync` only — enabling it for enumeration or incremental solving is unsound (pinned in Design § Design Principles and Hard Constraints; the `(v∨a)` counterexample is recorded in `src/index.ts`).
 - Incremental assumptions are validated/snapshotted before cached UNSAT, replayed before decisions **and SAT**, and cancelled in `finally`. Call-local UNSAT must never poison the permanent base-UNSAT cache. Stats outputs reset before validation: per-call work/new learned admissions plus the absolute live learned count; retained lifetime core accounting/reduction cadence is separate. Initial units are enqueued during creation, outside incremental per-call measurements.

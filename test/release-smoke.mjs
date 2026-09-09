@@ -326,7 +326,7 @@ try {
   assert.equal(realpathSync(packageRoot), packageRoot, 'Package must not be linked');
   const manifest = json(join(packageRoot, 'package.json'));
   assert.equal(manifest.name, '@divmain/sat');
-  assert.equal(manifest.version, '2.0.0');
+  assert.equal(manifest.version, '3.0.0');
   assert.equal(manifest.type, 'module');
   assert.equal(manifest.main, 'dist/index.js');
   assert.equal(manifest.types, './dist/index.d.ts');

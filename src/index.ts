@@ -3,16 +3,17 @@
 // of the returned model. `getAllSolutions` enumerates every model via
 // blocking clauses: the formula is compiled once and ONE persistent Solver
 // retains root assumptions, learned clauses, VSIDS and saved phases across
-// models. Pure-literal elimination is scoped to the single-shot `getSolution`
-// entry point (Design § Solver Core State and Invariants): it is enabled
-// there by default and deliberately unsound for enumeration (the (v∨a)
-// counterexample) or incremental solving. Every entry point returns a rich
-// result — `SolveResult` / `EnumerateResult` — never a bare model or null;
-// an UNSAT solve carries a failed-assumption core (Design § UNSAT Cores), and
-// 'unknown' reports conflict-budget exhaustion or an abort signal. The async
-// entry points slice search work by `yieldQuantum` and yield through a
-// platform-neutral scheduler (Design § Budgets, Async, and Interruptibility).
-// See Design § Public API Specification.
+// models. Pure-literal elimination is scoped to the single-shot entry
+// points (`getSolution`/`getSolutionAsync`; Design § Design Principles and
+// Hard Constraints): it is enabled there by default and deliberately unsound
+// for enumeration (the (v∨a) counterexample) or incremental solving. Every
+// entry point returns a rich result — `SolveResult` / `EnumerateResult` —
+// never a bare model or null; an UNSAT solve carries a failed-assumption
+// core (Design § UNSAT Cores), and 'unknown' reports conflict-budget
+// exhaustion or an abort signal. The async entry points slice search work by
+// `yieldQuantum` and yield through a platform-neutral scheduler (Design §
+// Budgets, Async, and Interruptibility).
+// See Design § Target Public API (v3.0).
 
 import { compile } from './compile.js';
 import type { BooleanExpr, Variable, VariableAssignments } from './expr.js';

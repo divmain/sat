@@ -1,6 +1,6 @@
 {
   "name": "@divmain/sat",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Zero-dependency SAT solver for TypeScript: Tseitin-compiled boolean formulas, CDCL solving, and complete model enumeration.",
   "type": "module",
   "main": "dist/index.js",
