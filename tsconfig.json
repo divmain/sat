@@ -1,7 +1,7 @@
 {
   "exclude": ["node_modules"],
   "compilerOptions": {
-    "lib": ["es2022"],
+    "lib": ["es2022", "dom"],
     "target": "es2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",

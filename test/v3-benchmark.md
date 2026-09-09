@@ -12,7 +12,7 @@ runs never rewrite. No timestamps are stored; wall times below are informational
 - Verified Git blob: `876115a1994d75d6afc3bf9e26f249e8d3a7f94b`; SHA-256: `7dceb3df7dba1a0047728283cc468179761f48467772b8af5ab60f89d175d560`
 - Pristine v2 baseline commit: `ae1a4fe9459c525d1ae746c82eb8bdbd2a97b0b2`; recorder seal: `2ba0a394b534fb64449a832ce95da4e81ee50ba6`
 - Recorded baseline environment: NODE_ENV `production` (audit-state matched)
-- Current HEAD (context, not implementation identity): `cd44ed11d0e6abf1bf2b61d94dd995d4d6a04438`
+- Current HEAD (context, not implementation identity): `dbbc3a2bb753eaf87ba607649f680fec7b9edc12`
 - Candidate Node: `v26.8.1`; NODE_ENV: `(unset)`; SAT_DEBUG audits: `false`
 
 ## Interpretation And Limits
@@ -540,23 +540,23 @@ runs never rewrite. No timestamps are stored; wall times below are informational
 | random3_n150_seed1 | 34 |
 | random3_n150_seed2 | 11 |
 | random3_n150_seed3 | 48 |
-| random3_n200_seed1 | 941 |
-| random3_n200_seed2 | 456 |
+| random3_n200_seed1 | 942 |
+| random3_n200_seed2 | 445 |
 | random3_n200_seed3 | 62 |
-| random3_n250_seed1 | 28 |
-| random3_n250_seed2 | 2595 |
-| random3_n250_seed3 | 3696 |
-| php_9_8 | 2147 |
+| random3_n250_seed1 | 30 |
+| random3_n250_seed2 | 2616 |
+| random3_n250_seed3 | 3728 |
+| php_9_8 | 2167 |
 | xor8 | 0 |
 | xor12 | 1 |
-| xor16 | 15 |
+| xor16 | 12 |
 | coloring_n40_k3_seed1 | 2 |
-| coloring_n40_k3_seed2 | 1 |
-| coloring_n40_k4_seed1 | 3 |
-| coloring_n40_k4_seed2 | 2 |
-| coloring_n60_k3_seed1 | 3 |
-| coloring_n60_k3_seed2 | 2 |
+| coloring_n40_k3_seed2 | 2 |
+| coloring_n40_k4_seed1 | 4 |
+| coloring_n40_k4_seed2 | 3 |
+| coloring_n60_k3_seed1 | 4 |
+| coloring_n60_k3_seed2 | 3 |
 | coloring_n60_k4_seed1 | 5 |
-| coloring_n60_k4_seed2 | 3 |
+| coloring_n60_k4_seed2 | 4 |
 | incremental32 | 165 |
 | pairs8 | 158 |

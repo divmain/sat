@@ -7,7 +7,7 @@ import { compile } from '../src/compile.js';
 import { and, not, or, Value } from '../src/expr.js';
 import type { BooleanExpr, VariableAssignments } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
-import type { SolverStats } from '../src/solver.js';
+import type { SearchVerdict, SolverStats } from '../src/solver.js';
 import {
   assertBenchmarkResult,
   assertPhase4Manifest,
@@ -803,12 +803,14 @@ describe('benchmark result validation', () => {
     );
   });
 
-  it('throws on a conflict-budget exhaustion, including a false UNSAT at the cap', () => {
+  it('fails on conflict-budget exhaustion, including a false UNSAT at the cap', () => {
     const solver = new Solver(compile(cnfToExpr(phpCnf(3, 2))), {
       enablePle: true,
-      maxConflicts: 1,
+      conflictBudget: 1,
     });
-    assert.throws(() => solver.solve(), /maximum conflict budget exhausted \(1\)/);
+    // The non-throwing budget: the first (non-terminal) conflict completes
+    // its atomic transaction, then the search reports 'unknown'.
+    assert.equal(solver.search(), 'unknown');
     assert.equal(solver.stats.conflicts, 1);
     for (const conflicts of [100, 101]) {
       assert.throws(
@@ -872,13 +874,14 @@ function runnerControl() {
         solverOptions.push(args[1]);
       }
 
-      override solve(): boolean {
+      // The verifier drives search(); the stub mirrors its tri-state verdict.
+      override search(): SearchVerdict {
         const previous = references.phase3.entries[this.instanceIndex];
         if (previous.verdict === 'UNSAT') {
           Object.assign(this.stats, previous.phase3);
-          return false;
+          return 'unsat';
         }
-        return super.solve();
+        return super.search();
       }
 
       override model(): VariableAssignments {
@@ -942,7 +945,7 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
         assert.deepEqual(options, {
           assumptions: fixture.assumptions,
           enablePle: true,
-          maxConflicts: fixture.maxConflicts,
+          conflictBudget: fixture.maxConflicts,
         });
         assert.notEqual(options?.assumptions, fixture.assumptions);
       }
@@ -1235,12 +1238,12 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
-        override solve(): boolean {
-          const sat = super.solve();
+        override search(): SearchVerdict {
+          const verdict = super.search();
           if (control.solvers.length === 8) {
             change(control.instances);
           }
-          return sat;
+          return verdict;
         }
       };
       await assert.rejects(
@@ -1324,11 +1327,11 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
         super(...args);
       }
 
-      override solve(): boolean {
-        const sat = super.solve();
+      override search(): SearchVerdict {
+        const verdict = super.search();
         // Isolate model/assumption validation from the separate hypergraph counter oracle.
         Object.assign(this.stats, { ...stats, decisions: 2, propagations: 16 });
-        return sat;
+        return verdict;
       }
     };
     await assert.rejects(runBenchmark(control.options), /model violates constant assumption/);
@@ -1356,10 +1359,10 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
-        override solve(): boolean {
-          const sat = super.solve();
+        override search(): SearchVerdict {
+          const verdict = super.search();
           change(this.stats);
-          return sat;
+          return verdict;
         }
       };
       await assert.rejects(runBenchmark(control.options), /missing or invalid/);
@@ -1368,16 +1371,22 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
 
   it('propagates solver budget exceptions and rejects false UNSAT at or beyond the cap', async () => {
     const exhausted = new Error('maximum conflict budget exhausted (200000)');
-    for (const conflicts of [null, 200_000, 200_001]) {
+    // The verifier enforces caps as budgets: a thrown legacy exception, a
+    // non-throwing 'unknown' verdict, and a false UNSAT at or beyond the cap
+    // all fail the run.
+    for (const conflicts of [null, 'unknown' as const, 200_000, 200_001]) {
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
-        override solve(): boolean {
+        override search(): SearchVerdict {
           if (conflicts === null) {
             throw exhausted;
           }
+          if (conflicts === 'unknown') {
+            return 'unknown';
+          }
           this.stats.conflicts = conflicts;
-          return false;
+          return 'unsat';
         }
       };
       await assert.rejects(
@@ -1395,9 +1404,9 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
         const control = runnerControl();
         const Base = control.runtime.Solver;
         control.runtime.Solver = class extends Base {
-          override solve(): boolean {
-            super.solve();
-            return verdict as boolean;
+          override search(): SearchVerdict {
+            super.search();
+            return verdict as SearchVerdict;
           }
         };
         await assert.rejects(
@@ -1414,14 +1423,14 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
         const control = runnerControl();
         const Base = control.runtime.Solver;
         control.runtime.Solver = class extends Base {
-          override solve(): boolean {
-            const sat = super.solve();
+          override search(): SearchVerdict {
+            const verdict = super.search();
             if (invalidHypergraph) {
               this.stats.decisions += 1;
             } else if (control.solvers.length === 2) {
               this.stats.learnedClauses = 0;
             }
-            return sat;
+            return verdict;
           }
         };
         await assert.rejects(
@@ -1437,14 +1446,14 @@ describe('actual legacy benchmark verifier (in-memory, real SAT solves, stubbed 
       const control = runnerControl();
       const Base = control.runtime.Solver;
       control.runtime.Solver = class extends Base {
-        override solve(): boolean {
-          const sat = super.solve();
+        override search(): SearchVerdict {
+          const verdict = super.search();
           // php_5_4 (instance 1): no verdict/oracle/cap check pins restarts, so
           // parity alone must catch the drift and gates mode must only report it.
           if (control.solvers.length === 2) {
             this.stats.restarts += 1;
           }
-          return sat;
+          return verdict;
         }
       };
       return control;

@@ -39,6 +39,9 @@ interface VsidsInternals {
   readonly decisionHeap: readonly number[];
   readonly heapPosition: Int32Array;
   readonly unassignedNamed: number;
+  // Named-variable membership per global variable index: the heap is indexed
+  // globally, so the flag — not an index bound — decides heap eligibility.
+  readonly named: Uint8Array;
   readonly varInc: number;
   bumpVariableActivity(variable: number): void;
   decisionPrecedes(left: number, right: number): boolean;
@@ -47,12 +50,12 @@ interface VsidsInternals {
 const internals = (solver: Solver): VsidsInternals => solver as unknown as VsidsInternals;
 
 function assertHeap(solver: Solver): void {
-  const { decisionHeap: heap, heapPosition: positions, unassignedNamed } = internals(solver);
-  const named = positions.length;
+  const { decisionHeap: heap, heapPosition: positions, unassignedNamed, named } = internals(solver);
   assert.strictEqual(new Set(heap).size, heap.length, 'no duplicate heap entries');
   for (let index = 0; index < heap.length; index += 1) {
     const variable = heap[index];
-    assert.ok(variable >= 0 && variable < named, 'only named variables enter the heap');
+    assert.ok(variable >= 0 && variable < positions.length, 'heap entries within the array');
+    assert.strictEqual(named[variable], 1, 'only named variables enter the heap');
     assert.strictEqual(positions[variable], index, 'position is the inverse of heap membership');
     if (index > 0) {
       const parent = heap[(index - 1) >> 1];
@@ -64,11 +67,13 @@ function assertHeap(solver: Solver): void {
     }
   }
   let unset = 0;
-  for (let variable = 0; variable < named; variable += 1) {
+  for (let variable = 0; variable < positions.length; variable += 1) {
+    if (named[variable] !== 1) {
+      assert.strictEqual(positions[variable], -1, 'auxiliaries never enter the heap');
+      continue;
+    }
     if (positions[variable] >= 0) {
       assert.strictEqual(heap[positions[variable]], variable);
-    } else {
-      assert.strictEqual(positions[variable], -1);
     }
     if (solver.assigns[variable] === Value.UNSET) {
       unset += 1;
@@ -112,7 +117,7 @@ class ObservedSolver extends Solver {
       // Constructor units/assumptions precede subclass field initialization,
       // but are level zero, and must not be logged as search decisions.
       if (reason === null && this.trailLim.length > 0) {
-        assert.ok(varOf(lit) < internals(this).heapPosition.length);
+        assert.strictEqual(internals(this).named[varOf(lit)], 1, 'decisions are named');
         this.decisions.push(lit);
       }
     }
@@ -137,8 +142,9 @@ class ObservedSolver extends Solver {
 class HeapOracleSolver extends ObservedSolver {
   override enqueue(lit: number, reason: Clause | null): boolean {
     if (reason === null && this.trailLim.length > 0) {
-      const candidates = Array.from({ length: internals(this).heapPosition.length }, (_, v) => v)
-        .filter((v) => this.assigns[v] === Value.UNSET)
+      const state = internals(this);
+      const candidates = Array.from({ length: state.heapPosition.length }, (_, v) => v)
+        .filter((v) => state.named[v] === 1 && this.assigns[v] === Value.UNSET)
         .sort((a, b) => this.activity[b] - this.activity[a] || a - b);
       assert.strictEqual(varOf(lit), candidates[0], 'real decision follows VSIDS, not index scan');
       assert.strictEqual(isNeg(lit) ? Value.FALSE : Value.TRUE, this.polarity[varOf(lit)]);
@@ -567,7 +573,10 @@ describe('Solver phase saving and priority hook', () => {
     ]);
     assert.strictEqual(solver.stats.decisions, 3);
     assert.strictEqual(expressionValue(formula, solver.model()), Value.TRUE);
-    assert.deepEqual(getSolution(xor('a', 'b')), { a: Value.FALSE, b: Value.TRUE });
+    assert.deepEqual(getSolution(xor('a', 'b')), {
+      status: 'sat',
+      model: { a: Value.FALSE, b: Value.TRUE },
+    });
   });
 
   it('passes a complete named partial record to the hook even for Object.prototype keys', () => {
@@ -616,16 +625,18 @@ describe('Solver fixed-seed reproducibility', () => {
             learnedLiterals: 999,
             minimizedLiterals: 999,
           };
-          const model = getSolution(formula, { stats });
+          const result = getSolution(formula, { stats });
           const singleStats = { ...stats };
           learned += stats.learnedClauses;
-          const models = getAllSolutions(formula, { stats });
+          const enumeration = getAllSolutions(formula, { stats });
+          assert.strictEqual(enumeration.status, 'complete');
+          const models = enumeration.models;
           assert.strictEqual(models.length, referenceModels(formula).length);
-          if (model !== null) {
-            assertModelShape(model, formula);
-            assert.strictEqual(expressionValue(formula, model), Value.TRUE);
+          if (result.status === 'sat') {
+            assertModelShape(result.model, formula);
+            assert.strictEqual(expressionValue(formula, result.model), Value.TRUE);
           }
-          const actual = JSON.stringify({ model, models, singleStats, enumerationStats: stats });
+          const actual = JSON.stringify({ result, models, singleStats, enumerationStats: stats });
           expected ??= actual;
           assert.strictEqual(actual, expected, `seed ${seed}, run ${run}`);
         }

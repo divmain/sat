@@ -1,7 +1,12 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
-import { createSolver, Value } from '../src/index.js';
-import type { BooleanExpr, SatSolver, VariableAssignments } from '../src/index.js';
+import { and, createSolver, Value } from '../src/index.js';
+import type {
+  BooleanExpr,
+  SatSolver,
+  VariableAssignments,
+  VariablePriority,
+} from '../src/index.js';
 import { compile } from '../src/compile.js';
 import { getVariables } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
@@ -64,7 +69,9 @@ class PropertySolver extends Solver {
   laterCandidateFreeRounds = 0;
   laterFullyLockedRounds = 0;
 
-  override solveAssuming(...args: Parameters<Solver['solveAssuming']>): VariableAssignments | null {
+  override solveAssuming(
+    ...args: Parameters<Solver['solveAssuming']>
+  ): ReturnType<Solver['solveAssuming']> {
     this.calls += 1;
     try {
       return super.solveAssuming(...args);
@@ -72,6 +79,14 @@ class PropertySolver extends Solver {
       assertRoot(this);
       assert.strictEqual(internals(this).incrementalCallActive, false);
     }
+  }
+
+  // add() is audited like the solve boundary: after every admission the
+  // handle is back at a coherent root state (named-flag heap accounting
+  // included), even with fresh root units pending propagation.
+  override add(expr: BooleanExpr): void {
+    super.add(expr);
+    assertRoot(this);
   }
 
   override reduceLearnedClauses(): void {
@@ -132,15 +147,31 @@ class PropertySolver extends Solver {
 function makeSolver(
   expr: BooleanExpr,
   variant: Variant,
+  variablePriority?: VariablePriority,
 ): { handle: SatSolver; core?: PropertySolver } {
-  if (variant.knobs === undefined) return { handle: createSolver(expr) };
+  if (variant.knobs === undefined) return { handle: createSolver(expr, { variablePriority }) };
   const core = new PropertySolver(compile(expr), {
     ...variant.knobs,
     enablePle: false,
-    maxConflicts: 1000,
+    variablePriority,
   });
   return {
-    handle: { solve: (assumptions, stats) => core.solveAssuming(assumptions, stats) },
+    handle: {
+      // The runaway guard is now a per-call conflict budget: verdicts are
+      // oracle-checked, so an 'unknown' would fail loudly rather than pass
+      // for exhaustion.
+      solve: (assumptions, options) => core.solveAssuming(assumptions, options?.stats, 1000),
+      solveAsync: (assumptions, options) =>
+        core.solveAssumingAsync(
+          assumptions,
+          options?.stats,
+          1000,
+          options?.signal,
+          options?.yieldQuantum,
+        ),
+      add: (addExpr) => core.add(addExpr),
+      variables: () => core.variables(),
+    },
     core,
   };
 }
@@ -228,7 +259,7 @@ for (const variant of VARIANTS) {
           let sawUnsat = false;
           for (const [index, assumptions] of sequence.entries()) {
             Object.assign(stats, counters(999));
-            const actual = handle.solve(assumptions, stats);
+            const actual = handle.solve(assumptions, { stats });
             assertResult(expr, assumptions, reference, actual);
             for (const key of WORK_KEYS) {
               assert.ok(Number.isInteger(stats[key]) && stats[key] >= 0, 'nonnegative actual work');
@@ -250,14 +281,17 @@ for (const variant of VARIANTS) {
                 core.clauses.filter((clause) => clause.learned).length,
               );
             }
-            if (actual === null) {
+            if (actual.status === 'unsat') {
               sawUnsat = true;
               totals.unsat += 1;
             } else {
               totals.sat += 1;
             }
             if (index === sequence.length - 1 && sawUnsat && reference.length > 0) {
-              assert.ok(actual !== null, 'a previous incompatible call cannot poison the base');
+              assert.ok(
+                actual.status === 'sat',
+                'a previous incompatible call cannot poison the base',
+              );
               totals.recoveries += 1;
             }
             totals.calls += 1;
@@ -326,8 +360,8 @@ for (const variant of VARIANTS) {
           for (const assumptions of assumptionSequence(expr, reference, seed)) {
             const statsA = counters(999);
             const statsB = counters(-1);
-            const modelA = first.solve(assumptions, statsA);
-            const modelB = second.solve(assumptions, statsB);
+            const modelA = first.solve(assumptions, { stats: statsA });
+            const modelB = second.solve(assumptions, { stats: statsB });
             assertResult(expr, assumptions, reference, modelA);
             assertResult(expr, assumptions, reference, modelB);
             assert.deepStrictEqual(modelA, modelB);
@@ -337,6 +371,198 @@ for (const variant of VARIANTS) {
         }
       }
       assert.strictEqual(calls, 256);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Incremental add() equivalence (Design § Incremental Clause Addition)
+// ---------------------------------------------------------------------------
+
+const ADD_SEEDS_PER_POOL = 64;
+const ADD_BATCHES = 3;
+
+interface AddHistory {
+  readonly batches: BooleanExpr[];
+  // Assumption sets solved at each stage (stage i covers batches 0..i).
+  readonly calls: ReadonlyArray<readonly VariableAssignments[]>;
+  // The first new name each batch introduces (undefined when a batch reuses
+  // only known names): the hook target that addresses appended variables.
+  readonly hookTargets: ReadonlyArray<string | undefined>;
+}
+
+// A seeded history: three random batches over the pool, plus per-stage
+// assumption sets drawn against the growing conjunction's reference models.
+// Deterministic under the seed, so every variant and twin replays it exactly.
+function addHistory(poolNames: readonly string[], seed: number): AddHistory {
+  const rng = mulberry32(700_000 + seed);
+  const batches: BooleanExpr[] = [];
+  const calls: VariableAssignments[][] = [];
+  const hookTargets: Array<string | undefined> = [];
+  const known = new Set<string>();
+  for (let batch = 0; batch < ADD_BATCHES; batch += 1) {
+    const expr = randomFormula(rng, { maxDepth: 2, maxWidth: 3, variables: poolNames }).expr;
+    batches.push(expr);
+    const fresh = [...getVariables(expr)].filter((name) => !known.has(name)).sort();
+    hookTargets.push(fresh[0]);
+    for (const name of fresh) known.add(name);
+    const conjunction = and(...batches);
+    const reference = referenceModels(conjunction);
+    const names = [...known].sort();
+    // Fisher-Yates, like the main battery: an inconsistent sort comparator
+    // would make the stream depend on the engine's sort implementation.
+    const shuffledNames = (): string[] => {
+      const shuffled = [...names];
+      for (let index = shuffled.length - 1; index > 0; index -= 1) {
+        const other = rng.nextInt(index + 1);
+        [shuffled[index], shuffled[other]] = [shuffled[other], shuffled[index]];
+      }
+      return shuffled;
+    };
+    const randomSubset = (): VariableAssignments =>
+      Object.fromEntries(
+        shuffledNames()
+          .filter(() => rng.boolean())
+          .map((name) => [name, rng.pick([Value.FALSE, Value.TRUE, Value.UNSET])]),
+      );
+    calls.push([
+      {},
+      randomSubset(),
+      reference.length > 0
+        ? randomAssumptions(rng, conjunction, { kind: 'consistent', maxAssumptions: 4 })
+        : randomSubset(),
+      reference.length < 2 ** names.length
+        ? randomAssumptions(rng, conjunction, { kind: 'contradictory' })
+        : randomSubset(),
+    ]);
+  }
+  return { batches, calls, hookTargets };
+}
+
+// Replay one history on one handle, oracle-checking every result against the
+// growing conjunction reference. Returns the per-call (result, stats) pairs
+// for cross-handle determinism comparison.
+function replayAddHistory(
+  variant: Variant,
+  history: AddHistory,
+  options?: { failAt?: { batch: number; exprs: unknown[] }; trackHook?: (hit: string) => void },
+): Array<{ result: ReturnType<SatSolver['solve']>; stats: ReturnType<typeof counters> }> {
+  let hookTarget: string | undefined;
+  const variablePriority: VariablePriority = (unassigned) => {
+    if (hookTarget !== undefined && unassigned.includes(hookTarget)) {
+      options?.trackHook?.(hookTarget);
+      return [hookTarget, true];
+    }
+    return null;
+  };
+  const observations: Array<{
+    result: ReturnType<SatSolver['solve']>;
+    stats: ReturnType<typeof counters>;
+  }> = [];
+  let handle: SatSolver | undefined;
+  for (let batch = 0; batch < history.batches.length; batch += 1) {
+    const conjunction = and(...history.batches.slice(0, batch + 1));
+    const reference = referenceModels(conjunction);
+    const staged = history.batches[batch];
+    if (batch === 0) {
+      handle = makeSolver(staged, variant, variablePriority).handle;
+    } else {
+      if (handle === undefined) throw new Error('history replay lost its handle');
+      const established: SatSolver = handle;
+      if (options?.failAt !== undefined && options.failAt.batch === batch) {
+        for (const bad of options.failAt.exprs) {
+          assert.throws(() => established.add(bad as BooleanExpr), /invalid BooleanExpr/);
+        }
+      }
+      established.add(staged);
+      // The named universe grows exactly by this batch's new names, always
+      // presented globally sorted.
+      assert.deepStrictEqual(established.variables(), [...getVariables(conjunction)].sort());
+    }
+    if (handle === undefined) throw new Error('history replay lost its handle');
+    const active: SatSolver = handle;
+    hookTarget = history.hookTargets[batch];
+    for (const assumptions of history.calls[batch]) {
+      const stats = counters(999);
+      const result = active.solve(assumptions, { stats });
+      // The equivalence contract: verdicts and model-set validity agree with
+      // single-shot solving of the conjunction (assertResult embeds the
+      // reference verdict, model validity/shape, and sound-core oracles).
+      assertResult(conjunction, assumptions, reference, result);
+      observations.push({ result, stats });
+    }
+  }
+  return observations;
+}
+
+for (const variant of VARIANTS) {
+  describe(`incremental add() cross-validation: ${variant.label}`, () => {
+    it('checks seeded add+solve sequences against the growing conjunction reference', (t) => {
+      let hookHits = 0;
+      let sat = 0;
+      let unsat = 0;
+      let additions = 0;
+      for (const pool of POOLS) {
+        for (let seed = 0; seed < ADD_SEEDS_PER_POOL; seed += 1) {
+          const history = addHistory(pool.names, seed);
+          additions += history.batches.length - 1;
+          const observations = replayAddHistory(variant, history, {
+            trackHook: () => {
+              hookHits += 1;
+            },
+          });
+          for (const { result } of observations) {
+            if (result.status === 'sat') sat += 1;
+            else unsat += 1;
+          }
+        }
+      }
+      assert.ok(sat > 0 && unsat > 0, 'both verdicts exercised across the battery');
+      assert.ok(hookHits > 0, 'hooks addressed appended variables');
+      t.diagnostic(
+        `${
+          2 * ADD_SEEDS_PER_POOL
+        } seeded histories; ${additions} adds; ${sat} SAT / ${unsat} UNSAT calls; ${hookHits} appended-variable hook picks`,
+      );
+    });
+
+    it('is deterministic for identical add histories, including per-call stats', () => {
+      let calls = 0;
+      for (const pool of POOLS) {
+        for (let seed = 0; seed < 8; seed += 1) {
+          const history = addHistory(pool.names, 40_000 + seed);
+          const first = replayAddHistory(variant, history);
+          const second = replayAddHistory(variant, history);
+          assert.deepStrictEqual(first, second);
+          calls += first.length;
+        }
+      }
+      assert.strictEqual(calls, 2 * 8 * (ADD_BATCHES * 4));
+    });
+
+    it('keeps failed adds atomic inside a seeded history', () => {
+      const failures: unknown[] = [
+        { and: ['a'], or: ['b'] }, // ambiguous multi-key node
+        { not: ['a'] }, // non-node payload
+        { or: 7 }, // non-array operands
+      ];
+      let comparisons = 0;
+      for (const pool of POOLS) {
+        for (let seed = 0; seed < 8; seed += 1) {
+          const history = addHistory(pool.names, 80_000 + seed);
+          const reference = replayAddHistory(variant, history);
+          const withFailure = replayAddHistory(variant, history, {
+            failAt: { batch: 1, exprs: failures },
+          });
+          assert.deepStrictEqual(
+            withFailure,
+            reference,
+            'a failed add leaves the history byte-for-byte equivalent',
+          );
+          comparisons += 1;
+        }
+      }
+      assert.strictEqual(comparisons, 2 * 8);
     });
   });
 }

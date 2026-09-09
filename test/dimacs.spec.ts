@@ -17,6 +17,8 @@ import {
   assertModelListsEqual,
   assertModelShape,
   cnfToExpr,
+  expectCompleteModels,
+  expectSatModel,
   expressionValue,
   mulberry32,
   phpCnf,
@@ -178,7 +180,7 @@ describe('end-to-end DIMACS verdicts', () => {
   const throughDimacs = (cnf: DimacsCnf) => cnfToExpr(parseDimacs(serializeDimacs(cnf)));
 
   it('proves PHP(5,4) UNSAT', () => {
-    assert.strictEqual(getSolution(throughDimacs(phpCnf(5, 4))), null);
+    assert.deepStrictEqual(getSolution(throughDimacs(phpCnf(5, 4))), { status: 'unsat', core: {} });
   });
 
   it('proves PHP(6,5) UNSAT with clause learning', () => {
@@ -192,7 +194,10 @@ describe('end-to-end DIMACS verdicts', () => {
       learnedLiterals: 0,
       minimizedLiterals: 0,
     };
-    assert.strictEqual(getSolution(throughDimacs(phpCnf(6, 5)), { stats }), null);
+    assert.deepStrictEqual(getSolution(throughDimacs(phpCnf(6, 5)), { stats }), {
+      status: 'unsat',
+      core: {},
+    });
     assert.ok(stats.learnedClauses > 0, 'learning, not merely conflicts, distinguishes CDCL');
   });
 
@@ -209,9 +214,9 @@ describe('end-to-end DIMACS verdicts', () => {
         // clause activity are mutable. Mirror single-shot PLE, without a hook.
         const solver = new Solver(compile(throughDimacs(phpCnf(pigeons, holes))), {
           enablePle: true,
-          maxConflicts,
+          conflictBudget: maxConflicts,
         });
-        // A budget exception must fail this test, never masquerade as UNSAT.
+        // Budget exhaustion must fail this test, never masquerade as UNSAT.
         assert.strictEqual(solver.solve(), false);
         assert.ok(solver.stats.conflicts < maxConflicts, 'UNSAT proof finishes before exhaustion');
         assert.ok(solver.stats.learnedClauses > 0, 'clause learning must actually engage');
@@ -224,12 +229,11 @@ describe('end-to-end DIMACS verdicts', () => {
 
   it('finds a model for a satisfiable prereq chain and enumerates all n+1 models', () => {
     const expr = throughDimacs(prereqChainCnf(8));
-    const model = getSolution(expr);
-    assert.ok(model !== null, 'the chain is satisfiable');
+    const model = expectSatModel(getSolution(expr));
     assertModelShape(model, expr);
     assert.strictEqual(expressionValue(expr, model), Value.TRUE);
 
-    const all = getAllSolutions(expr);
+    const all = expectCompleteModels(getAllSolutions(expr));
     assert.strictEqual(all.length, 9, 'an 8-variable chain has exactly 9 models');
     assertModelListsEqual(all, referenceModels(expr));
     for (const m of all) {
@@ -240,8 +244,7 @@ describe('end-to-end DIMACS verdicts', () => {
 
   it('solves a seeded random 3-CNF instance end-to-end with a valid model', () => {
     const expr = throughDimacs(random3Cnf(mulberry32(42), 20, 85));
-    const model = getSolution(expr);
-    assert.ok(model !== null, 'seed 42 at 20 vars/85 clauses is satisfiable (pinned)');
+    const model = expectSatModel(getSolution(expr));
     assertModelShape(model, expr);
     assert.strictEqual(expressionValue(expr, model), Value.TRUE);
   });

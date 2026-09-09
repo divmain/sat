@@ -20,19 +20,32 @@ import { fileURLToPath } from 'node:url';
 const runtimeExports = [
   'Value',
   'and',
+  'atLeast',
+  'atMost',
+  'atMostOne',
   'createSolver',
+  'createSolverStats',
+  'exactly',
   'getAllSolutions',
+  'getAllSolutionsAsync',
   'getSolution',
+  'getSolutionAsync',
   'implies',
   'not',
   'or',
   'xor',
 ];
 const typeExports = [
+  'AsyncSolveOptions',
   'BooleanExpr',
+  'EnumerateResult',
   'SatSolver',
+  'SatSolverAsyncOptions',
+  'SatSolverCallOptions',
   'SolveOptions',
+  'SolveResult',
   'SolverStats',
+  'SolverStatsInput',
   'Variable',
   'VariableAssignments',
   'VariablePriority',
@@ -254,6 +267,9 @@ function extractReadme(path) {
       ['Finding a Single Solution', 'javascript'],
       ['Finding All Solutions', 'javascript'],
       ['Reusing a Compiled Solver', 'javascript'],
+      ['Adding Constraints Incrementally', 'javascript'],
+      ['Cardinality Constraints', 'javascript'],
+      ['Async Solving', 'javascript'],
       ['API', 'ts'],
       ['`SolverStats`', 'javascript'],
       ['Ported Hypergraph Heuristic', 'typescript'],
@@ -399,7 +415,7 @@ try {
     fences: extractReadme(readme),
   };
   const snippets = evidence.readme.fences.filter((fence) => fence.file !== undefined);
-  assert.equal(snippets.length, 6);
+  assert.equal(snippets.length, 9);
   const configPath = join(consumer, 'tsconfig.json');
   const config = {
     compilerOptions: {

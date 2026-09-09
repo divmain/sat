@@ -6,7 +6,24 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as sat from '@divmain/sat';
 
-const { and, or, not, implies, xor, Value, getSolution, getAllSolutions, createSolver } = sat;
+const {
+  and,
+  or,
+  not,
+  implies,
+  xor,
+  atMostOne,
+  atMost,
+  atLeast,
+  exactly,
+  Value,
+  getSolution,
+  getSolutionAsync,
+  getAllSolutions,
+  getAllSolutionsAsync,
+  createSolver,
+  createSolverStats,
+} = sat;
 const root = realpathSync(dirname(fileURLToPath(import.meta.url)));
 assert.deepEqual(process.execArgv, [], 'Runtime probes must use plain Node with no flags/loaders');
 assert.equal(process.env.NODE_OPTIONS, undefined);
@@ -33,7 +50,11 @@ const counters = (value = 0) => Object.fromEntries(statNames.map((name) => [name
 function variables(expr, result = new Set()) {
   if (typeof expr === 'string') result.add(expr);
   else if (Object.hasOwn(expr, 'not')) variables(expr.not, result);
-  else for (const child of expr.and ?? expr.or) variables(child, result);
+  else if (Object.hasOwn(expr, 'atMost')) {
+    for (const child of expr.atMost.exprs) variables(child, result);
+  } else if (Object.hasOwn(expr, 'atLeast')) {
+    for (const child of expr.atLeast.exprs) variables(child, result);
+  } else for (const child of expr.and ?? expr.or) variables(child, result);
   return [...result].sort();
 }
 
@@ -42,6 +63,15 @@ function evaluate(expr, model) {
   if (Object.hasOwn(expr, 'and')) return expr.and.every((child) => evaluate(child, model));
   if (Object.hasOwn(expr, 'or')) return expr.or.some((child) => evaluate(child, model));
   if (Object.hasOwn(expr, 'not')) return !evaluate(expr.not, model);
+  // Cardinality operands are a multiset: repeated operands count repeatedly.
+  if (Object.hasOwn(expr, 'atMost')) {
+    const count = expr.atMost.exprs.filter((child) => evaluate(child, model)).length;
+    return count <= expr.atMost.k;
+  }
+  if (Object.hasOwn(expr, 'atLeast')) {
+    const count = expr.atLeast.exprs.filter((child) => evaluate(child, model)).length;
+    return count >= expr.atLeast.k;
+  }
   throw new Error('Unexpected Boolean AST');
 }
 
@@ -86,19 +116,27 @@ function modelSet(expr, models, expected, assumptions = {}) {
   assert.deepEqual(models.map(key).sort(), expected.map(key).sort());
 }
 
-function runtime() {
+async function runtime() {
   const exports = Object.keys(sat).sort();
   assert.deepEqual(exports, [
     'Value',
     'and',
+    'atLeast',
+    'atMost',
+    'atMostOne',
     'createSolver',
+    'createSolverStats',
+    'exactly',
     'getAllSolutions',
+    'getAllSolutionsAsync',
     'getSolution',
+    'getSolutionAsync',
     'implies',
     'not',
     'or',
     'xor',
   ]);
+  assert.deepEqual(createSolverStats(), counters());
   const forbidden = [
     'default',
     'compileCount',
@@ -131,8 +169,21 @@ function runtime() {
   assert.deepEqual(xor('a', 'b'), {
     or: [{ and: ['a', { not: 'b' }] }, { and: [{ not: 'a' }, 'b'] }],
   });
+  // Cardinality constructors: atMostOne is pure atMost(1, …) sugar, and
+  // exactly(k, …) is atMost ∧ atLeast over the same operand multiset.
+  assert.deepEqual(atMostOne('a', 'b'), { atMost: { k: 1, exprs: ['a', 'b'] } });
+  assert.deepEqual(atMost(2, 'a', 'b'), { atMost: { k: 2, exprs: ['a', 'b'] } });
+  assert.deepEqual(atLeast(2, 'a', 'b'), { atLeast: { k: 2, exprs: ['a', 'b'] } });
+  assert.deepEqual(exactly(1, 'a', 'b'), {
+    and: [{ atMost: { k: 1, exprs: ['a', 'b'] } }, { atLeast: { k: 1, exprs: ['a', 'b'] } }],
+  });
+  assert.throws(() => atMost(-1, 'a'), /non-negative safe integer/);
+  assert.throws(() => atLeast(1.5, 'a'), /non-negative safe integer/);
+  assert.throws(() => exactly(Number.MAX_SAFE_INTEGER + 1, 'a'), /non-negative safe integer/);
   const checks = [];
   const check = (name, probe) => checks.push({ name, status: 'passed', ...probe() });
+  const asyncCheck = async (name, probe) =>
+    checks.push({ name, status: 'passed', ...(await probe()) });
 
   check('constructors, SAT/UNSAT/empty semantics across all three APIs', () => {
     const cases = [
@@ -165,6 +216,59 @@ function runtime() {
         ],
       ],
       [
+        'atMostOne',
+        atMostOne('a', 'b', 'c'),
+        [
+          { a: 0, b: 0, c: 0 },
+          { a: 1, b: 0, c: 0 },
+          { a: 0, b: 1, c: 0 },
+          { a: 0, b: 0, c: 1 },
+        ],
+      ],
+      [
+        'atLeast',
+        atLeast(2, 'a', 'b', 'c'),
+        [
+          { a: 1, b: 1, c: 0 },
+          { a: 1, b: 0, c: 1 },
+          { a: 0, b: 1, c: 1 },
+          { a: 1, b: 1, c: 1 },
+        ],
+      ],
+      [
+        'exactly',
+        exactly(2, 'a', 'b', 'c'),
+        [
+          { a: 1, b: 1, c: 0 },
+          { a: 1, b: 0, c: 1 },
+          { a: 0, b: 1, c: 1 },
+        ],
+      ],
+      [
+        'atMost-fold',
+        atMost(5, 'a', 'b'),
+        [
+          { a: 0, b: 0 },
+          { a: 0, b: 1 },
+          { a: 1, b: 0 },
+          { a: 1, b: 1 },
+        ],
+      ],
+      // Multiplicity: two occurrences of a true 'a' exceed exactly(1, …).
+      ['exactly-multiplicity', exactly(1, 'a', 'a'), []],
+      // A nested (totalized) threshold under not/or.
+      [
+        'nested-cardinality',
+        or(not(atMost(1, 'a', 'b')), 'c'),
+        [
+          { a: 1, b: 1, c: 0 },
+          { a: 1, b: 1, c: 1 },
+          { a: 0, b: 0, c: 1 },
+          { a: 0, b: 1, c: 1 },
+          { a: 1, b: 0, c: 1 },
+        ],
+      ],
+      [
         'worked',
         and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e'))),
         [{ a: 1, b: 0, c: 1, d: 1, e: 1 }],
@@ -183,17 +287,25 @@ function runtime() {
     ];
     for (const [, expr, expected] of cases) {
       const solver = createSolver(expr);
-      assert.deepEqual(Object.keys(solver), ['solve']);
+      assert.deepEqual(Object.keys(solver), ['solve', 'solveAsync', 'add', 'variables']);
       for (const actual of [getSolution(expr), solver.solve(), solver.solve()]) {
-        if (expected.length === 0) assert.equal(actual, null);
-        else {
-          modelFor(expr, actual);
+        if (expected.length === 0) {
+          assert.equal(actual.status, 'unsat');
+          // No assumptions supplied: the only sound core is the empty one.
+          shape(actual.core, []);
+        } else {
+          assert.equal(actual.status, 'sat');
+          modelFor(expr, actual.model);
           assert.ok(
-            expected.some((model) => variables(expr).every((name) => model[name] === actual[name])),
+            expected.some((model) =>
+              variables(expr).every((name) => model[name] === actual.model[name]),
+            ),
           );
         }
       }
-      modelSet(expr, getAllSolutions(expr), expected);
+      const enumeration = getAllSolutions(expr);
+      assert.equal(enumeration.status, 'complete');
+      modelSet(expr, enumeration.models, expected);
     }
     return { cases: cases.map(([name, , expected]) => ({ name, models: expected.length })) };
   });
@@ -202,10 +314,12 @@ function runtime() {
     const expr = and('a', 'b');
     const solver = createSolver(expr);
     for (const assumptions of [{ a: 0 }, { a: 1, b: 0 }]) {
-      assert.equal(getSolution(expr, { assumptions }), null);
-      assert.deepEqual(getAllSolutions(expr, { assumptions }), []);
-      assert.equal(solver.solve(assumptions), null);
-      assert.deepEqual(modelFor(expr, solver.solve()), { a: 1, b: 1 });
+      // The failed-assumption core names exactly the contradictory facts.
+      const expectedCore = assumptions.a === 0 ? { a: 0 } : { b: 0 };
+      assert.deepEqual(getSolution(expr, { assumptions }), { status: 'unsat', core: expectedCore });
+      assert.deepEqual(getAllSolutions(expr, { assumptions }), { status: 'complete', models: [] });
+      assert.deepEqual(solver.solve(assumptions), { status: 'unsat', core: expectedCore });
+      assert.deepEqual(modelFor(expr, solver.solve().model), { a: 1, b: 1 });
     }
     for (const empty of [and(), or()]) {
       const reusable = createSolver(empty);
@@ -234,10 +348,12 @@ function runtime() {
     ];
     const expr = and(...[...special, 'ordinary'].map(free));
     const assumptions = Object.fromEntries(special.map((name, index) => [name, index % 2]));
-    const first = modelFor(expr, getSolution(expr, { assumptions }), assumptions);
+    const first = modelFor(expr, getSolution(expr, { assumptions }).model, assumptions);
+    const enumerated = getAllSolutions(expr, { assumptions });
+    assert.equal(enumerated.status, 'complete');
     modelSet(
       expr,
-      getAllSolutions(expr, { assumptions }),
+      enumerated.models,
       [
         { ...assumptions, ordinary: 0 },
         { ...assumptions, ordinary: 1 },
@@ -245,14 +361,14 @@ function runtime() {
       assumptions,
     );
     const solver = createSolver(expr);
-    const before = modelFor(expr, solver.solve(assumptions), assumptions);
+    const before = modelFor(expr, solver.solve(assumptions).model, assumptions);
     const saved = { ...before };
     const opposite = Object.fromEntries(special.map((name) => [name, 1 - assumptions[name]]));
-    const after = modelFor(expr, solver.solve(opposite), opposite);
+    const after = modelFor(expr, solver.solve(opposite).model, opposite);
     assert.notEqual(before, after);
     assert.deepEqual(before, saved);
     before.__proto__ = 1 - before.__proto__;
-    modelFor(expr, solver.solve(assumptions), assumptions);
+    modelFor(expr, solver.solve(assumptions).model, assumptions);
     return { names: variables(expr), first, opposite: after };
   });
 
@@ -282,10 +398,11 @@ function runtime() {
     for (const expr of [and('a'), and('a', or()), and('a', not('a')), searchedUnsat]) {
       const solver = createSolver(expr);
       const initial = counters(999);
-      const base = solver.solve(undefined, initial);
-      if (base === null) {
+      const base = solver.solve(undefined, { stats: initial });
+      if (base.status === 'unsat') {
         const cached = counters(999);
-        assert.equal(solver.solve({}, cached), null);
+        // Cached base UNSAT: an assumption-independent proof cores on {}.
+        assert.deepEqual(solver.solve({}, { stats: cached }), { status: 'unsat', core: {} });
         assert.deepEqual(cached, {
           ...counters(),
           learnedClausesCurrent: initial.learnedClausesCurrent,
@@ -294,7 +411,7 @@ function runtime() {
       const calls = [
         (assumptions, stats) => getSolution(expr, { assumptions, stats }),
         (assumptions, stats) => getAllSolutions(expr, { assumptions, stats }),
-        (assumptions, stats) => solver.solve(assumptions, stats),
+        (assumptions, stats) => solver.solve(assumptions, { stats }),
       ];
       for (const call of calls) {
         for (const missing of [-1, 0, 1]) {
@@ -315,19 +432,19 @@ function runtime() {
           rejected += 1;
         }
         const actual = call({ a: -1 });
-        if (Array.isArray(actual)) {
-          assert.equal(actual.length === 0, base === null);
-          for (const model of actual) modelFor(expr, model);
-        } else if (base === null) assert.equal(actual, null);
-        else modelFor(expr, actual);
+        if (actual.status === 'complete') {
+          assert.equal(actual.models.length === 0, base.status === 'unsat');
+          for (const model of actual.models) modelFor(expr, model);
+        } else if (base.status === 'unsat') assert.equal(actual.status, 'unsat');
+        else modelFor(expr, actual.model);
       }
     }
     const expr = or('a', 'b');
     const solver = createSolver(expr);
     for (const call of [
-      (assumptions) => [getSolution(expr, { assumptions })],
-      (assumptions) => getAllSolutions(expr, { assumptions }),
-      (assumptions) => [solver.solve(assumptions)],
+      (assumptions) => [getSolution(expr, { assumptions }).model],
+      (assumptions) => getAllSolutions(expr, { assumptions }).models,
+      (assumptions) => [solver.solve(assumptions).model],
     ]) {
       let reads = 0;
       const assumptions = Object.create({ inheritedUnknown: true });
@@ -352,23 +469,23 @@ function runtime() {
       const expr = and(implies('a', 'x'), implies('a', not('x')));
       const solver = createSolver(expr);
       const stats = counters(999);
-      assert.equal(solver.solve({ a: 1 }, stats), null);
+      assert.deepEqual(solver.solve({ a: 1 }, { stats }), { status: 'unsat', core: { a: 1 } });
       assert.ok(stats.conflicts > 0 && stats.learnedClauses > 0 && stats.learnedClausesCurrent > 0);
       const first = { ...stats };
-      modelFor(expr, solver.solve({ a: 0, x: 1 }, stats), { a: 0, x: 1 });
+      modelFor(expr, solver.solve({ a: 0, x: 1 }, { stats }).model, { a: 0, x: 1 });
       assert.deepEqual(stats, {
         ...counters(),
         learnedClausesCurrent: first.learnedClausesCurrent,
       });
       const retained = { ...stats };
-      assert.equal(solver.solve({ a: 1 }, stats), null);
+      assert.deepEqual(solver.solve({ a: 1 }, { stats }), { status: 'unsat', core: { a: 1 } });
       assert.deepEqual(stats, retained);
       for (const assumptions of [{ missing: -1 }, { a: true }]) {
         Object.assign(stats, counters(999));
-        assert.throws(() => solver.solve(assumptions, stats), /assumption/);
+        assert.throws(() => solver.solve(assumptions, { stats }), /assumption/);
         assert.deepEqual(stats, retained);
       }
-      modelFor(expr, solver.solve());
+      modelFor(expr, solver.solve().model);
       assert.deepEqual(
         stats,
         retained,
@@ -381,9 +498,13 @@ function runtime() {
   check('no stale PLE pins; assumptions replayed from a one-read snapshot after learning', () => {
     const stale = and(or('a', 'b'), or(not('a'), 'c'));
     const reusable = createSolver(stale);
-    modelFor(stale, reusable.solve());
-    assert.deepEqual(modelFor(stale, reusable.solve({ c: 0 }), { c: 0 }), { a: 0, b: 1, c: 0 });
-    modelFor(stale, reusable.solve({ a: 1 }), { a: 1 });
+    modelFor(stale, reusable.solve().model);
+    assert.deepEqual(modelFor(stale, reusable.solve({ c: 0 }).model, { c: 0 }), {
+      a: 0,
+      b: 1,
+      c: 0,
+    });
+    modelFor(stale, reusable.solve({ a: 1 }).model, { a: 1 });
     const expr = and(free('a'), free('b'), or('x', 't'), or('x', not('t')));
     let reads = 0;
     let suppliedA = 1;
@@ -402,13 +523,13 @@ function runtime() {
       },
     });
     const stats = counters(999);
-    const first = modelFor(expr, solver.solve(assumptions, stats), { a: 1, b: 1 });
+    const first = modelFor(expr, solver.solve(assumptions, { stats }).model, { a: 1, b: 1 });
     assert.equal(reads, 1);
     assert.ok(
       stats.conflicts > 0 && stats.learnedClauses > 0,
       'Replay witness must actually learn',
     );
-    const next = modelFor(expr, solver.solve(assumptions), { a: 0, b: 0 });
+    const next = modelFor(expr, solver.solve(assumptions).model, { a: 0, b: 0 });
     assert.equal(reads, 2);
     return { first, next, getterReads: reads, firstCallStats: stats };
   });
@@ -433,12 +554,12 @@ function runtime() {
     });
     const stats = counters(999);
     assert.throws(
-      () => solver.solve({ a: 1 }, stats),
+      () => solver.solve({ a: 1 }, { stats }),
       (error) => error === failure,
     );
     assert.equal(stats.propagations, 1, 'Report work before callback failure');
     assert.equal(stats.decisions, 0);
-    modelFor(expr, solver.solve({ a: 1 }), { a: 1 });
+    modelFor(expr, solver.solve({ a: 1 }).model, { a: 1 });
     assert.throws(
       () =>
         solver.solve({
@@ -449,7 +570,7 @@ function runtime() {
         }),
       (error) => error === failure,
     );
-    const recovered = modelFor(expr, solver.solve({ a: 0, b: 0 }), { a: 0, b: 0 });
+    const recovered = modelFor(expr, solver.solve({ a: 0, b: 0 }).model, { a: 0, b: 0 });
     return { throwingCallStats: stats, recovered };
   });
 
@@ -486,10 +607,10 @@ function runtime() {
       };
       const models =
         api === 'single'
-          ? [getSolution(expr, { variablePriority })]
+          ? [getSolution(expr, { variablePriority }).model]
           : api === 'all'
-            ? getAllSolutions(expr, { variablePriority })
-            : [createSolver(expr, { variablePriority }).solve()];
+            ? getAllSolutions(expr, { variablePriority }).models
+            : [createSolver(expr, { variablePriority }).solve().model];
       for (const model of models) modelFor(expr, model);
       assert.ok(calls > 0);
       if (api === 'all') assert.equal(models.length, 8);
@@ -502,9 +623,9 @@ function runtime() {
     const expr = and('root', xor('a', 'b'));
     let preferTrue = true;
     const solver = createSolver(expr, { variablePriority: () => ['a', preferTrue] });
-    assert.deepEqual(modelFor(expr, solver.solve()), { a: 1, b: 0, root: 1 });
+    assert.deepEqual(modelFor(expr, solver.solve().model), { a: 1, b: 0, root: 1 });
     preferTrue = false;
-    assert.deepEqual(modelFor(expr, solver.solve()), { a: 0, b: 1, root: 1 });
+    assert.deepEqual(modelFor(expr, solver.solve().model), { a: 0, b: 1, root: 1 });
     const choices = [
       null,
       ['unknown', true],
@@ -520,17 +641,19 @@ function runtime() {
         calls += 1;
         return choice;
       };
-      assert.deepEqual(modelFor(expr, getSolution(expr, { variablePriority })), {
+      assert.deepEqual(modelFor(expr, getSolution(expr, { variablePriority }).model), {
         a: 0,
         b: 1,
         root: 1,
       });
-      assert.deepEqual(modelFor(expr, createSolver(expr, { variablePriority }).solve()), {
+      assert.deepEqual(modelFor(expr, createSolver(expr, { variablePriority }).solve().model), {
         a: 0,
         b: 1,
         root: 1,
       });
-      modelSet(expr, getAllSolutions(expr, { variablePriority }), [
+      const enumerated = getAllSolutions(expr, { variablePriority });
+      assert.equal(enumerated.status, 'complete');
+      modelSet(expr, enumerated.models, [
         { a: 0, b: 1, root: 1 },
         { a: 1, b: 0, root: 1 },
       ]);
@@ -539,23 +662,87 @@ function runtime() {
     return { defensiveChoices: choices, savedPhaseOverridden: true };
   });
 
+  // Async entry points under the REAL platform scheduler: yieldQuantum 64
+  // over a wide formula forces genuine event-loop yields (MessageChannel
+  // posts on this Node — no scheduler global exists here), and natural exit
+  // of this process proves a settled solve retains no ports or listeners.
+  await asyncCheck('async solves settle with real yields, budgets, aborts, and reuse', async () => {
+    const wide = and(...Array.from({ length: 96 }, (_, i) => or(`w${i}`, not(`w${i}`))));
+    const wideSingle = await getSolutionAsync(wide, { yieldQuantum: 64 });
+    assert.equal(wideSingle.status, 'sat');
+    modelFor(wide, wideSingle.model);
+    const wideAll = await getAllSolutionsAsync(and('a', or('a', 'b')), { yieldQuantum: 64 });
+    assert.equal(wideAll.status, 'complete');
+    modelSet(and('a', or('a', 'b')), wideAll.models, [
+      { a: 1, b: 0 },
+      { a: 1, b: 1 },
+    ]);
+    const boundary = and(
+      or('a', 'b'),
+      or('a', not('b')),
+      or(not('a'), 'b'),
+      or(not('a'), not('b')),
+    );
+    const budgeted = await getSolutionAsync(boundary, { conflictBudget: 1, yieldQuantum: 64 });
+    assert.deepEqual(budgeted, { status: 'unknown', reason: 'conflictBudget' });
+    const handle = createSolver(xor('left', 'right'));
+    assert.deepEqual(await handle.solveAsync({ left: 1 }, { yieldQuantum: 64 }), {
+      status: 'sat',
+      model: { left: 1, right: 0 },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    assert.deepEqual(await handle.solveAsync(undefined, { signal: controller.signal }), {
+      status: 'unknown',
+      reason: 'aborted',
+    });
+    const reused = handle.solve();
+    assert.equal(reused.status, 'sat');
+    modelFor(xor('left', 'right'), reused.model);
+    return { yieldsForced: true, budgetUnknown: true, aborted: true, reused: true };
+  });
+
+  check('add() conjoins constraints failure-atomically; variables() stays sorted', () => {
+    const base = xor('left', 'right');
+    const solver = createSolver(base);
+    assert.deepEqual(solver.variables(), ['left', 'right']);
+    assert.equal(solver.solve({ left: 1 }).status, 'sat');
+    // New names become valid assumption/model names immediately.
+    const extension = and(implies('left', 'extra'), or('extra', 'right'));
+    solver.add(extension);
+    assert.deepEqual(solver.variables(), ['extra', 'left', 'right']);
+    const whole = and(base, extension);
+    modelFor(whole, solver.solve({ extra: 1 }).model, { extra: 1 });
+    modelFor(whole, solver.solve().model);
+    // A failed add leaves the handle unchanged and reusable.
+    assert.throws(() => solver.add({ and: 'nope' }), /invalid BooleanExpr/);
+    assert.deepEqual(solver.variables(), ['extra', 'left', 'right']);
+    assert.equal(solver.solve().status, 'sat');
+    // Strengthening to UNSAT is retained, with an assumption-independent core.
+    solver.add(and(not('left'), not('right'), not('extra')));
+    assert.deepEqual(solver.solve(), { status: 'unsat', core: {} });
+    assert.deepEqual(solver.solve({ extra: 1 }), { status: 'unsat', core: {} });
+    return { variables: solver.variables() };
+  });
+
   check(
     'construction units excluded from incremental stats; blockers excluded from live count',
     () => {
       const expr = and('root', implies('root', 'forced'), free('free'));
       const stats = counters(999);
-      modelFor(expr, getSolution(expr, { stats }));
+      modelFor(expr, getSolution(expr, { stats }).model);
       assert.equal(stats.propagations, 2);
       const single = { ...stats };
       const solver = createSolver(expr);
-      modelFor(expr, solver.solve(undefined, stats));
+      modelFor(expr, solver.solve(undefined, { stats }).model);
       assert.deepEqual(stats, { ...counters(), decisions: 1, propagations: 1 });
       const first = { ...stats };
-      modelFor(expr, solver.solve({ free: 1 }, stats), { free: 1 });
+      modelFor(expr, solver.solve({ free: 1 }, { stats }).model, { free: 1 });
       assert.deepEqual(stats, counters());
       const second = { ...stats };
-      const models = getAllSolutions(expr, { stats });
-      modelSet(expr, models, [
+      const enumeration = getAllSolutions(expr, { stats });
+      assert.equal(enumeration.status, 'complete');
+      modelSet(expr, enumeration.models, [
         { root: 1, forced: 1, free: 0 },
         { root: 1, forced: 1, free: 1 },
       ]);
@@ -583,19 +770,81 @@ async function readme(path, heading) {
   }
   const worked = { a: 1, b: 0, c: 1, d: 1, e: 1 };
   if (heading === 'Basic Usage') {
-    assert.deepEqual(logs, [[{ ready: 1 }]]);
-    shape(logs[0][0], ['ready']);
+    assert.deepEqual(logs, [[{ status: 'sat', model: { ready: 1 } }]]);
+    shape(logs[0][0].model, ['ready']);
   } else if (heading === 'Finding a Single Solution') {
-    assert.deepEqual(logs, [[worked]]);
-    shape(logs[0][0], Object.keys(worked));
+    assert.deepEqual(logs, [[{ status: 'sat', model: worked }]]);
+    shape(logs[0][0].model, Object.keys(worked));
   } else if (heading === 'Finding All Solutions') {
-    assert.deepEqual(logs, [[[worked]], [[{ a: 0, b: 1 }]]]);
-    shape(logs[0][0][0], Object.keys(worked));
-    shape(logs[1][0][0], ['a', 'b']);
+    assert.deepEqual(logs, [
+      [{ status: 'complete', models: [worked] }],
+      [{ status: 'complete', models: [{ a: 0, b: 1 }] }],
+    ]);
+    shape(logs[0][0].models[0], Object.keys(worked));
+    shape(logs[1][0].models[0], ['a', 'b']);
   } else if (heading === 'Reusing a Compiled Solver') {
-    assert.deepEqual(logs, [[{ left: 1, right: 0 }], [null], [{ left: 0, right: 1 }], [true]]);
-    shape(logs[0][0], ['left', 'right']);
-    shape(logs[2][0], ['left', 'right']);
+    assert.deepEqual(logs, [
+      [{ status: 'sat', model: { left: 1, right: 0 } }],
+      [{ status: 'unsat', core: { left: 1, right: 1 } }],
+      [{ status: 'sat', model: { left: 0, right: 1 } }],
+      ['sat'],
+    ]);
+    shape(logs[0][0].model, ['left', 'right']);
+    shape(logs[1][0].core, ['left', 'right']);
+    shape(logs[2][0].model, ['left', 'right']);
+  } else if (heading === 'Adding Constraints Incrementally') {
+    const vertices = ['a', 'b', 'c', 'd'];
+    const names = [];
+    for (const v of vertices) for (let k = 0; k < 3; k += 1) names.push(`${v}#${k}`);
+    assert.deepEqual(logs[0], ['palette 3: sat']);
+    assert.deepEqual(logs[1], ['palette 2: sat']);
+    assert.deepEqual(logs[2], ['palette 1: unsat']);
+    assert.deepEqual(logs[3], [12]);
+    const model = logs[4][0];
+    shape(model, names);
+    // Independently verify the final 2-coloring: palette 1 was UNSAT, so the
+    // retained model is the palette-2 one — no '#2' variable may be set...
+    for (const v of vertices) assert.equal(model[`${v}#2`], 0, 'color 2 forbidden');
+    // ...every vertex is colored...
+    for (const v of vertices) assert.ok(model[`${v}#0`] + model[`${v}#1`] >= 1, `colored: ${v}`);
+    // ...and adjacent vertices never share one.
+    for (const [u, v] of [
+      ['a', 'b'],
+      ['b', 'c'],
+      ['c', 'd'],
+      ['d', 'a'],
+    ]) {
+      for (const k of [0, 1]) {
+        assert.ok(!(model[`${u}#${k}`] === 1 && model[`${v}#${k}`] === 1), `edge ${u}-${v} @${k}`);
+      }
+    }
+    // The deterministic solver reproduces the exact fenced model.
+    assert.deepEqual(model, {
+      'a#0': 0,
+      'a#1': 1,
+      'a#2': 0,
+      'b#0': 1,
+      'b#1': 0,
+      'b#2': 0,
+      'c#0': 0,
+      'c#1': 1,
+      'c#2': 0,
+      'd#0': 1,
+      'd#1': 0,
+      'd#2': 0,
+    });
+  } else if (heading === 'Cardinality Constraints') {
+    // The on-call rotation example: SAT, exactly seven schedules (three
+    // primaries; with Ada primary her reviewer self-conflict forbids
+    // reviewer-ada, leaving reviewer-bo forced), and UNSAT with an
+    // assumption-independent core once both reviewers are excluded.
+    assert.deepEqual(logs, [['sat'], [7], [{ status: 'unsat', core: {} }]]);
+  } else if (heading === 'Async Solving') {
+    // The fenced example awaits a budgeted, fine-quantum async solve: its
+    // output is exactly the sync result's, and top-level await settlement
+    // under plain Node re-proves that no scheduler resource leaks.
+    assert.deepEqual(logs, [[{ status: 'sat', model: { a: 1, b: 1 } }]]);
+    shape(logs[0][0].model, ['a', 'b']);
   } else if (heading === '`SolverStats`') {
     assert.deepEqual(logs, [[1], [0]]);
   } else if (heading === 'Ported Hypergraph Heuristic') {
@@ -626,11 +875,12 @@ async function readme(path, heading) {
     ];
     assert.equal(names.length, 19);
     assert.equal(edges.length, 18);
-    for (const model of logs[1]) {
-      shape(model, names);
+    for (const result of logs[1]) {
+      assert.equal(result.status, 'sat');
+      shape(result.model, names);
       for (const [target, prerequisite] of edges)
-        assert.ok(model[target] === 0 || model[prerequisite] === 1);
-      for (const forced of ['a', 'b', 'c', 'g', 'h']) assert.equal(model[forced], 1);
+        assert.ok(result.model[target] === 0 || result.model[prerequisite] === 1);
+      for (const forced of ['a', 'b', 'c', 'g', 'h']) assert.equal(result.model[forced], 1);
     }
   } else throw new Error(`Unrecognized executable README heading: ${heading}`);
   return { status: 'passed', heading, resolution, logs };
@@ -638,5 +888,5 @@ async function readme(path, heading) {
 
 const [mode, path, heading] = process.argv.slice(2);
 assert.ok(mode === 'runtime' || mode === 'readme', 'Expected runtime or readme mode');
-const result = mode === 'runtime' ? runtime() : await readme(path, heading);
+const result = mode === 'runtime' ? await runtime() : await readme(path, heading);
 console.log(JSON.stringify(result, null, 2));

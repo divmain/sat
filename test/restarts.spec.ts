@@ -25,6 +25,9 @@ interface HeapState {
   readonly decisionHeap: readonly number[];
   readonly heapPosition: Int32Array;
   readonly unassignedNamed: number;
+  // Named-variable membership per global variable index: the heap is indexed
+  // globally, so the flag — not an index bound — decides heap eligibility.
+  readonly named: Uint8Array;
   readonly varInc: number;
 }
 
@@ -33,11 +36,12 @@ interface HeapState {
 const heapState = (solver: Solver): HeapState => solver as unknown as HeapState;
 
 function assertHeap(solver: Solver): void {
-  const { decisionHeap: heap, heapPosition: positions, unassignedNamed } = heapState(solver);
+  const { decisionHeap: heap, heapPosition: positions, unassignedNamed, named } = heapState(solver);
   assert.strictEqual(new Set(heap).size, heap.length);
   for (let index = 0; index < heap.length; index += 1) {
     const variable = heap[index];
-    assert.ok(variable >= 0 && variable < positions.length, 'only named heap entries');
+    assert.ok(variable >= 0 && variable < positions.length, 'heap entries within the array');
+    assert.strictEqual(named[variable], 1, 'only named heap entries');
     assert.strictEqual(positions[variable], index);
     if (index > 0) {
       const parent = heap[Math.floor((index - 1) / 2)];
@@ -50,6 +54,10 @@ function assertHeap(solver: Solver): void {
   }
   let unset = 0;
   for (let variable = 0; variable < positions.length; variable += 1) {
+    if (named[variable] !== 1) {
+      assert.strictEqual(positions[variable], -1, 'auxiliaries never enter the heap');
+      continue;
+    }
     if (positions[variable] !== -1) {
       assert.strictEqual(heap[positions[variable]], variable);
     }
@@ -203,11 +211,16 @@ class CheckedSolver extends RestartTraceSolver {
   override enqueue(lit: number, reason: Clause | null): boolean {
     const wasUnset = this.assigns[varOf(lit)] === Value.UNSET;
     if (wasUnset && reason === null && this.trailLim.length > 0) {
-      const named = heapState(this).heapPosition.length;
-      assert.ok(varOf(lit) < named, 'auxiliaries are never decisions');
+      const state = heapState(this);
+      assert.strictEqual(state.named[varOf(lit)], 1, 'auxiliaries are never decisions');
       if (this.variablePriority === undefined) {
-        const candidates = Array.from({ length: named }, (_, variable) => variable)
-          .filter((variable) => this.assigns[variable] === Value.UNSET)
+        const candidates = Array.from(
+          { length: state.heapPosition.length },
+          (_, variable) => variable,
+        )
+          .filter(
+            (variable) => state.named[variable] === 1 && this.assigns[variable] === Value.UNSET,
+          )
           .sort((a, b) => this.activity[b] - this.activity[a] || a - b);
         assert.strictEqual(varOf(lit), candidates[0], 'independent VSIDS ranking');
         assert.strictEqual(isNeg(lit) ? Value.FALSE : Value.TRUE, this.polarity[varOf(lit)]);
@@ -401,7 +414,7 @@ describe('Solver exact Luby restart budgets', () => {
         restartBaseConflicts: base,
         enablePle: true,
         variablePriority: gadgetPriority,
-        maxConflicts: 12 * base + 1,
+        conflictBudget: 12 * base + 1,
       });
       assert.strictEqual(solver.solve(), true);
       // Literal, independently summed prefix: 1,1,2,1,1,2,4. Not luby().
@@ -437,25 +450,39 @@ describe('Solver exact Luby restart budgets', () => {
     solver.assertCounters();
   });
 
-  for (const maxConflicts of [1, 7]) {
-    it(`keeps the hard cap ${maxConflicts} independent of restart epochs and throws before learning`, () => {
+  for (const conflictBudget of [1, 7]) {
+    it(`keeps the hard budget ${conflictBudget} independent of restart epochs, exhausting only after the final atomic transaction`, () => {
       const solver = new RestartTraceSolver(compile(gadgets(12)), {
         restartPolicy: 'luby',
         restartBaseConflicts: 1,
         variablePriority: gadgetPriority,
-        maxConflicts,
+        conflictBudget,
       });
-      assert.throws(
-        () => solver.solve(),
-        new RegExp(`maximum conflict budget exhausted \\(${maxConflicts}\\)`),
-      );
-      assert.strictEqual(solver.stats.conflicts, maxConflicts);
-      assert.strictEqual(solver.stats.learnedClauses, maxConflicts - 1);
+      // New boundary semantics (Design § Budget contract): the budget-spending
+      // conflict COMPLETES its analysis/learning/backjump/assertion
+      // transaction, then the search reports 'unknown' — never a throw, and
+      // never one more propagation pass to seek a verdict.
+      assert.strictEqual(solver.search(), 'unknown');
+      assert.strictEqual(solver.stats.conflicts, conflictBudget);
+      assert.strictEqual(solver.stats.learnedClauses, conflictBudget);
+      // The budget-spending transaction also consults the restart policy, so
+      // a boundary lands ON the final conflict (budget 1 restarts at conflict
+      // 1); every observed boundary here is an actual positive-level
+      // cancellation.
+      const expectedBoundaries = [1, 2, 4, 5, 6].filter((count) => count <= conflictBudget);
       assert.deepStrictEqual(
         solver.boundaries.map((event) => event.conflict),
-        [1, 2, 4, 5, 6].filter((count) => count < maxConflicts),
+        expectedBoundaries,
       );
-      assert.strictEqual(solver.stats.restarts, maxConflicts === 1 ? 0 : 5);
+      assert.strictEqual(solver.stats.restarts, expectedBoundaries.length);
+      // Exhaustion never masquerades as UNSAT: the same formula under an
+      // unbudgeted identical history still proves SAT.
+      const resumed = new RestartTraceSolver(compile(gadgets(12)), {
+        restartPolicy: 'luby',
+        restartBaseConflicts: 1,
+        variablePriority: gadgetPriority,
+      });
+      assert.strictEqual(resumed.solve(), true);
     });
   }
 
@@ -474,7 +501,7 @@ describe('Solver exact Luby restart budgets', () => {
       const before = { ...stats };
       const solver = new RestartTraceSolver(compile(gadgets(12)), {
         stats,
-        maxConflicts: 13,
+        conflictBudget: 13,
         restartPolicy: 'luby',
         restartBaseConflicts: 1,
         variablePriority: gadgetPriority,
@@ -498,7 +525,6 @@ describe('Solver exact Luby restart budgets', () => {
     const solver = new CheckedSolver(compile(free), {
       restartPolicy: 'luby',
       restartBaseConflicts: 1,
-      maxConflicts: 0,
     });
     assert.strictEqual(solver.solve(), true);
     assert.strictEqual(solver.stats.decisions, 128);
@@ -731,7 +757,7 @@ describe('Solver restart regression and reference gates', () => {
     const solver = new RestartTraceSolver(compile(cnfToExpr(phpCnf(8, 7))), {
       enablePle: true,
       restartPolicy: 'luby',
-      maxConflicts: gate.maxConflicts,
+      conflictBudget: gate.maxConflicts,
     });
     // Independent UNSAT witness: eight pigeons cannot occupy seven distinct holes.
     assert.strictEqual(solver.solve(), false);
@@ -789,7 +815,7 @@ describe('Solver restart regression and reference gates', () => {
                 enablePle,
                 restartPolicy: 'luby',
                 restartBaseConflicts: 1,
-                maxConflicts: 1000,
+                conflictBudget: 1000,
               });
               const sat = solver.solve();
               assert.strictEqual(

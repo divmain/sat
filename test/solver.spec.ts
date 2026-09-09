@@ -176,16 +176,21 @@ describe('Solver unit propagation', () => {
     assert.strictEqual(solverStats.conflicts, 0);
   });
 
-  it('throws instead of reporting UNSAT when the conflict budget is exhausted', () => {
+  it('reports UNSAT, never exhaustion, when the budget-spending conflict is terminal (verdict at the limit)', () => {
     const solver = new Solver(
       handBuiltCnf(
         ['a', 'b'],
         [clause([posLit(0)]), clause([negLit(1)]), clause([negLit(0), posLit(1)])],
       ),
-      { maxConflicts: 1 },
+      { conflictBudget: 1 },
     );
 
-    assert.throws(() => solver.solve(), /maximum conflict budget exhausted \(1\)/);
+    // The first conflict is detected at root during the initial propagation
+    // pass: a terminal conflict establishes UNSAT without analysis and takes
+    // precedence over the spent budget (Design § Budget contract).
+    assert.strictEqual(solver.search(), 'unsat');
+    assert.strictEqual(solver.stats.conflicts, 1);
+    assert.strictEqual(solver.solve(), false, 'cached permanent UNSAT replays without re-counting');
   });
 });
 

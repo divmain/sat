@@ -485,3 +485,63 @@ short-circuit behavior itself is unchanged and still asserted). Extension
 correctness and propagation refutation remain exercised per total named
 assignment by the agreement harness, now documented as the named encoding
 contract in `src/compile.ts`. `compile.ts` line coverage is 100%.
+
+## Phase-3 API checkpoints (tasks 2ac2, 4946, 7f6e)
+
+The Phase-3 capability work lands in one working tree per API layer; the
+harness runs below were taken at the task-7f6e checkpoint (incremental
+`SatSolver.add()`).
+
+**Rich results/cores (task-2ac2) and budgets/async (task-4946): disclosed
+deltas on 2 rows.** Against the Phase-2 checkpoint commit, the incremental32
+history's per-call counters moved (e.g. calls[31] conflicts 146 → 123,
+terminal learnedClausesCurrent 6,319 → 5,841) and the pairs8 enumeration's
+first model digests permute in adjacent pairs (the ordered prefix digest
+moves with them). Verdicts, caps, and the pairs8 model-SET digest are
+unchanged: the deltas trace to the budgets/async cleanup machinery, which
+rewinds an abandoned or no-op-cancelled root propagation cursor onto the
+queue instead of discarding it, so the next call conservatively re-inspects
+those watch lists from their already-relocated state — relocation order,
+thence conflict/deletion order and model choice, shift without any semantic
+change. Both rows stay well within their sealed caps. All other rows are
+byte-identical, and parity mode remains available for explicit experiments.
+
+**Incremental add() (task-7f6e): counter-neutral representation change.** The
+v2 contiguous `index < numNamedVars` invariant became a per-variable `named`
+flag (`Uint8Array`) consulted at every use site (heap init/membership,
+`enqueue`/`cancelUntil` named accounting, blocker construction, `model()`
+projection, hook input construction and pick revalidation, and the trail
+audit), with `ensureCapacity` reallocate-and-copy growth and a solver-owned
+growable symbol table; `compile()` and the new `compileIncremental()` share
+one engine whose output is unchanged for existing inputs. Evidence: the
+harness run at this checkpoint reproduces the pre-task working tree's
+measurements exactly — the entire Counters and Disclosed Deltas tables are
+byte-identical to the pre-run artifacts, with only informational wall times
+and the recorded source hashes (compile.ts/index.ts/solver.ts) moving — and
+`bench:legacy`'s strict compiled-snapshot gate stays byte-identical on all 8
+fixtures. The corpus exercises no `add()` scenario (the incremental32 row
+uses per-call assumptions on a fixed base, as sealed); the add() equivalence
+battery in `test/incremental-property.spec.ts` (128 seeded histories × 3
+variants, with determinism and failed-add atomicity twins) plus the targeted
+regressions in `test/add.spec.ts` carry the new-path oracles.
+
+**Cardinality constraints (task-3358): additive compiler extension, corpus
+counter-neutral.** The compiler learned the two cardinality node kinds
+(`atMost`/`atLeast`) with constructor/compile-time validation, total constant
+folding with the pinned edge folds, position-dispatched encodings (conjunctive
+pairwise/Sinz; nested fully-reified totalizer), and the conjunctive-atLeast →
+atMost(n−k, ¬L) rewrite. The sealed corpus exercises no cardinality node (its
+inputs are immutable), so the harness run at this checkpoint reproduces every
+outcome and counter: the disclosed-delta inventory is unchanged at 285 cells
+(the three xor compiled snapshots plus their propagation counters from
+task-7ca6, and the task-4946 incremental32/pairs8 machinery deltas), with only
+the candidate source hashes moving (expr.ts/compile.ts/index.ts, plus the
+typecheck-driven cardinality branches in test/bench-evidence.ts and
+test/helpers.ts). `bench:legacy`'s strict complete-compiled-snapshot gate
+stays byte-identical on all 8 fixtures, and the 19 non-fatal legacy counter
+deltas are unchanged from the task-9c11 checkpoint. The new-path oracles live
+in `test/cardinality.spec.ts` (asserted-counter extension/propagation and
+nested full-reification oracles), the versioned cardinality generator stream
+(v1) battery in `test/property.spec.ts`, and the add()/async/cores
+extensions; the release smoke pins the four new runtime exports and the new
+README fence.

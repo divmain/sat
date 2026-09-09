@@ -68,7 +68,16 @@ function evaluate(expr: BooleanExpr | string, model: VariableAssignments): boole
   if (typeof expr === 'string') return model[expr] === Value.TRUE;
   if ('and' in expr) return expr.and.every((child) => evaluate(child, model));
   if ('or' in expr) return expr.or.some((child) => evaluate(child, model));
-  return !evaluate(expr.not, model);
+  if ('not' in expr) return !evaluate(expr.not, model);
+  if ('atMost' in expr) {
+    const count = expr.atMost.exprs.filter((child) => evaluate(child, model)).length;
+    return count <= expr.atMost.k;
+  }
+  if ('atLeast' in expr) {
+    const count = expr.atLeast.exprs.filter((child) => evaluate(child, model)).length;
+    return count >= expr.atLeast.k;
+  }
+  throw new Error('Unexpected BooleanExpr node');
 }
 
 export function modelEvidence(
@@ -86,7 +95,9 @@ export function modelEvidence(
     if (typeof node === 'string') universe.add(node);
     else if ('and' in node) pending.push(...node.and);
     else if ('or' in node) pending.push(...node.or);
-    else pending.push(node.not);
+    else if ('not' in node) pending.push(node.not);
+    else if ('atMost' in node) pending.push(...node.atMost.exprs);
+    else pending.push(...node.atLeast.exprs);
   }
   const names = [...universe].sort();
   assert.deepEqual(Reflect.ownKeys(model).sort(), names);

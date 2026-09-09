@@ -3,7 +3,7 @@
   "generatedBy": "test/bench-v3.ts (npm run bench)",
   "mode": "gates",
   "context": {
-    "head": "cd44ed11d0e6abf1bf2b61d94dd995d4d6a04438",
+    "head": "dbbc3a2bb753eaf87ba607649f680fec7b9edc12",
     "note": "Machine-generated data and comparison tables only; the narrative lives in the committed test/v3-benchmark-review.md, never rewritten by harness runs. Timing is console/Markdown information only."
   },
   "replay": {
@@ -33,17 +33,17 @@
         "biome.json": "527bab36084d7ab8a09e894d5e79b469d26e273544e8fbecbe204eaa53b2e784",
         "package-lock.json": "583b6a3fdf8552b86e12254ee4547aa59c751a9e00e35e8799e0a006f13dd789",
         "package.json": "1f9e156493d27f853e260b89c8a2e7202bc7571d4cdf541ec880332d4de37292",
-        "src/compile.ts": "bcc2f20671b88c5f5e8f4cdc22a52c304a7391f2e9f0b118b79bcc50876dbb32",
-        "src/expr.ts": "b33173266365e1cce63876baef8041f4e16647108625c15d79bb034af763bd63",
-        "src/index.ts": "e7d8ef2eed66566035124a1a846cc82672c4ac35e097834d2419ffd31c4f8d14",
-        "src/solver.ts": "a4a9c4eb7b92364269ec6f3fd63cdc7679a9c5be4d1a165581884f46327da7c6",
-        "test/bench-evidence.ts": "fc6306a75f8f48877da3710052a295cb9ceb9b10aeff0d4ca3f35091d9f59c10",
-        "test/bench-v3-adapter.ts": "4d95f26b1dc5250e6a1f6d19866003419124d25229cf4550478018936551f477",
+        "src/compile.ts": "4040969840b42ae97d0101d78e589ebd9d540ca4adb810fa7cff7ae7955a12dc",
+        "src/expr.ts": "9b08fb95708a1065c2f13a41c095829c166a1fd8ebc634761bb5019ec524946d",
+        "src/index.ts": "102d0d804d03e836f9f5a645e665c660790d95024474938aed500cce8b594fec",
+        "src/solver.ts": "48d2d20740b6b1c14fe957731e2a5a83369432262850ac4b30759210968ba9b2",
+        "test/bench-evidence.ts": "3ebed5329c8e0ecf79d8eb3110c029d8a331c9fc0b6c979347ec880255e854c3",
+        "test/bench-v3-adapter.ts": "3d5bb898640fd611f78eecb7b9492e7ad97d6ef8dec058d297bb442cccef6acf",
         "test/bench-v3-corpus.ts": "692949472ab8b52d45636d616d10ff80d24292c4f5a59edc59930f3d77075871",
         "test/bench-v3-references.ts": "af432c3353986fad4a9857cf9100b07616ababf949df34c36743d51210a060c8",
         "test/bench-v3.ts": "b8e690ecf73fcdfea1944b5a2c97f3ecf952ef9d2d2910789cf50f3d9af6f22d",
-        "test/helpers.ts": "2aa24b5a5c47e82d7c7f4e5757d43a675dd8c486550615edecf2aab628108dae",
-        "tsconfig.json": "8b73accc1270fafbb51287da44e89df9e5eee49954be1f821620e6e602874646"
+        "test/helpers.ts": "5b1b85208bdf3c299bd5c238980dffd40b25a53ec33fa399e9068c1680cdd56a",
+        "tsconfig.json": "5ca2981dc8b72b73f4805b624de2b4e7badf0e3fb4918233fa324b91bcaf6cc5"
       },
       "environment": {
         "node": "v26.8.1",

@@ -197,11 +197,18 @@ export async function runBenchmark({
       // Keep validation assumptions independent of any mutation by the solver.
       assumptions: { ...fixture.assumptions },
       enablePle: true,
-      maxConflicts: fixture.maxConflicts,
+      // The pinned fixture cap is enforced as a (non-throwing) conflict
+      // budget: exhaustion is a verifier failure below, never UNSAT evidence.
+      conflictBudget: fixture.maxConflicts,
     });
-    const sat = solver.solve();
+    const verdict = solver.search();
     const wallMs = performance.now() - start;
-    assert.equal(typeof sat, 'boolean', `${fixture.name}: invalid solver verdict`);
+    assert.notEqual(
+      verdict,
+      'unknown' as const,
+      `${fixture.name}: maximum conflict budget exhausted (${fixture.maxConflicts})`,
+    );
+    const sat = verdict === 'sat';
     const model = sat ? solver.model() : null;
     assert.equal(sat, model !== null, `${fixture.name}: solver verdict/model disagreement`);
     assertBenchmarkResult(expr, fixture, model, solver.stats, recorded.verdict);

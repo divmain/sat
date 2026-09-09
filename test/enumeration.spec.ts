@@ -7,10 +7,11 @@ import type { Clause, CompiledCnf } from '../src/compile.js';
 import { and, implies, not, or, Value, xor } from '../src/expr.js';
 import type { BooleanExpr, VariableAssignments } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
-import type { SolverStats } from '../src/solver.js';
+import type { SearchVerdict, SolverStats } from '../src/solver.js';
 import {
   assertModelListsEqual,
   assertModelShape,
+  expectCompleteModels,
   expressionValue,
   modelKey,
   referenceModels,
@@ -38,7 +39,21 @@ interface Internals {
   readonly learnedClauseReductionThreshold: number;
   readonly restartBaseConflicts: number;
   readonly restartPolicy: { readonly kind: 'ema' | 'luby' };
-  readonly maxConflicts: number | undefined;
+  readonly conflictBudget: number | undefined;
+  // Named-variable membership per global variable index (post-add() named
+  // indices need not be contiguous; enumeration never adds, so the flag here
+  // marks exactly 0..numNamedVars-1).
+  readonly named: Uint8Array;
+}
+
+// The number of named variables, derived from the named flags rather than the
+// pre-add() contiguous-index invariant.
+function namedCount(solver: Solver): number {
+  let count = 0;
+  for (const flag of internals(solver).named) {
+    count += flag;
+  }
+  return count;
 }
 // Observation only: no tests install arbitrary learned clauses or manufacture
 // LBD, activity, assignments, reasons, phases, or counter values in a solver.
@@ -244,7 +259,7 @@ describe('permanent clause admission for persistent enumeration', () => {
     assert.strictEqual(solver.trailLim.length, 0);
     assert.strictEqual(solver.stats.conflicts, 0);
     assertModelListsEqual(
-      solver.enumerateModels(),
+      expectCompleteModels(solver.enumerateModels()),
       referenceModels(expr).filter((model) => modelKey(model) !== modelKey(excluded)),
     );
   });
@@ -413,11 +428,14 @@ class EnumerationAudit extends Solver {
     super(base, options);
   }
 
-  override solve(): boolean {
+  // Intercepts the tri-state core driver: enumerateSlices dispatches through
+  // search(), so this single override covers every per-model search. These
+  // enumerations run without budgets, so 'unknown' never occurs here.
+  override search(): SearchVerdict {
     assert.strictEqual(this.trailLim.length, 0, 'each enumeration search starts at root');
     const before = { ...this.stats };
     this.solveCalls += 1;
-    const result = super.solve();
+    const result = super.search();
     for (const counter of [
       'decisions',
       'propagations',
@@ -457,10 +475,14 @@ class EnumerationAudit extends Solver {
   }
 
   override addPermanentClause(raw: readonly number[]): Clause | null {
-    assert.strictEqual(raw.length, this.base.numNamedVars);
-    assert.strictEqual(new Set(raw.map(varOf)).size, this.base.numNamedVars);
+    // Named-flag-aware blocker audit: the blocker covers exactly the flagged
+    // named variables (enumeration never calls add(), so the flags mark
+    // precisely 0..numNamedVars-1) and never an auxiliary index.
+    const flags = internals(this).named;
+    assert.strictEqual(raw.length, namedCount(this));
+    assert.strictEqual(new Set(raw.map(varOf)).size, namedCount(this));
     for (const lit of raw) {
-      assert.ok(varOf(lit) < this.base.numNamedVars, 'blockers never mention auxiliaries');
+      assert.strictEqual(flags[varOf(lit)], 1, 'blockers never mention auxiliaries');
       assert.strictEqual(
         litValue(lit, this.assigns),
         Value.FALSE,
@@ -575,7 +597,7 @@ describe('persistent enumeration production path', () => {
     reads = 0;
     const instances = new Set<Solver>();
     const searches: Array<{ sat: boolean; stats: SolverStats; root: number[] }> = [];
-    const solve = Solver.prototype.solve;
+    const search = Solver.prototype.search;
     const enumerate = Solver.prototype.enumerateModels;
     let loopCalls = 0;
     t.mock.method(Solver.prototype, 'enumerateModels', function (this: Solver) {
@@ -583,20 +605,21 @@ describe('persistent enumeration production path', () => {
       instances.add(this);
       return enumerate.call(this);
     });
-    t.mock.method(Solver.prototype, 'solve', function (this: Solver) {
+    // The shared loop dispatches each per-model search through search().
+    t.mock.method(Solver.prototype, 'search', function (this: Solver) {
       instances.add(this);
-      const sat = solve.call(this);
+      const verdict = search.call(this);
       this.checkInvariants();
       assertReasons(this);
       searches.push({
-        sat,
+        sat: verdict === 'sat',
         stats: { ...this.stats },
         root: this.trail.filter((lit) => this.level[varOf(lit)] === 0),
       });
-      return sat;
+      return verdict;
     });
     const stats = counters(999);
-    const models = getAllSolutions(expr, { stats });
+    const models = expectCompleteModels(getAllSolutions(expr, { stats }));
     assert.strictEqual(
       reads,
       oneCompilationReads,
@@ -681,9 +704,9 @@ describe('persistent enumeration production path', () => {
       },
       b2: Value.UNSET,
     };
-    const original = Solver.prototype.solve;
+    const original = Solver.prototype.search;
     const instances = new Set<Solver>();
-    t.mock.method(Solver.prototype, 'solve', function (this: Solver) {
+    t.mock.method(Solver.prototype, 'search', function (this: Solver) {
       instances.add(this);
       assert.strictEqual(this.assigns[0], Value.TRUE);
       assert.strictEqual(this.level[0], 0);
@@ -692,7 +715,7 @@ describe('persistent enumeration production path', () => {
       return original.call(this);
     });
     const expr = pairs(3);
-    const models = getAllSolutions(expr, { assumptions, stats });
+    const models = expectCompleteModels(getAllSolutions(expr, { assumptions, stats }));
     assert.strictEqual(reads, 1);
     assert.strictEqual(instances.size, 1);
     assert.deepStrictEqual(zeros, counters(1));
@@ -715,7 +738,7 @@ describe('persistent enumeration production path', () => {
       assert.strictEqual(internals(this).learnedClauseReductionThreshold, 10_000);
       assert.strictEqual(internals(this).restartBaseConflicts, 100);
       assert.strictEqual(internals(this).restartPolicy.kind, 'ema');
-      assert.strictEqual(internals(this).maxConflicts, undefined);
+      assert.strictEqual(internals(this).conflictBudget, undefined);
       return original.call(this);
     });
     const extra = {
@@ -723,9 +746,12 @@ describe('persistent enumeration production path', () => {
       learnedClauseReductionThreshold: 1,
       restartBaseConflicts: 1,
       restartPolicy: 'luby',
+      // The retired throwing cap stays a non-forwarded unknown knob; the
+      // public conflictBudget is a real SolveOptions member and belongs to
+      // the budget contract tests, not this bag.
       maxConflicts: 0,
     } as SolveOptions;
-    assert.strictEqual(getAllSolutions(or('a', 'b'), extra).length, 3);
+    assert.strictEqual(expectCompleteModels(getAllSolutions(or('a', 'b'), extra)).length, 3);
   });
 
   it('validates all assumptions even on empty/known-UNSAT formulas and rejects Boolean values', () => {
@@ -752,17 +778,17 @@ describe('persistent enumeration production path', () => {
 
   it('terminates zero-named enumeration with exactly one permanent empty blocker', () => {
     const solver = new EnumerationAudit(compile(and()), { learnedClauseReductionThreshold: 1 });
-    assert.deepStrictEqual(solver.enumerateModels(), [{}]);
+    assert.deepStrictEqual(solver.enumerateModels(), { status: 'complete', models: [{}] });
     assert.strictEqual(solver.modelsProduced, 1);
     assert.strictEqual(solver.solveCalls, 2);
     assert.strictEqual(solver.blockers.size, 1);
     assert.deepStrictEqual([...solver.blockers][0].lits, []);
     assert.deepStrictEqual(solver.stats, { ...counters(), conflicts: 1 });
-    assert.deepStrictEqual(solver.enumerateModels(), []);
+    assert.deepStrictEqual(solver.enumerateModels(), { status: 'complete', models: [] });
     assert.deepStrictEqual(solver.stats, { ...counters(), conflicts: 1 });
     solver.checkInvariants();
     const stats = counters(999);
-    assert.deepStrictEqual(getAllSolutions(or(), { stats }), []);
+    assert.deepStrictEqual(getAllSolutions(or(), { stats }), { status: 'complete', models: [] });
     assert.deepStrictEqual(stats, counters(), 'compiler-known empty-clause UNSAT needs no search');
   });
 
@@ -786,7 +812,7 @@ describe('persistent enumeration production path', () => {
           assumptions,
           learnedClauseReductionThreshold: 1,
         });
-        const models = solver.enumerateModels();
+        const models = expectCompleteModels(solver.enumerateModels());
         assertModelListsEqual(models, expected);
         for (const model of models) {
           assertModelShape(model, expr);
@@ -841,14 +867,14 @@ describe('persistent enumeration production path', () => {
     for (let run = 0; run < 2; run += 1) {
       const base = compile(expr);
       class AssumptionAudit extends EnumerationAudit {
-        override solve(): boolean {
+        override search(): SearchVerdict {
           for (const [name, value] of Object.entries(assumptions)) {
             const variable = varOf(literal(base, name));
             assert.strictEqual(this.assigns[variable], value);
             assert.strictEqual(this.level[variable], 0);
             assert.strictEqual(this.reason[variable], null);
           }
-          return super.solve();
+          return super.search();
         }
       }
       const solver = new AssumptionAudit(base, {
@@ -858,7 +884,7 @@ describe('persistent enumeration production path', () => {
         restartBaseConflicts: 1,
         learnedClauseReductionThreshold: 1,
       });
-      const models = solver.enumerateModels();
+      const models = expectCompleteModels(solver.enumerateModels());
       assertModelListsEqual(models, expected);
       for (const model of models) {
         assertModelShape(model, expr);
@@ -919,10 +945,10 @@ describe('persistent enumeration production path', () => {
         }
       }
       const solver = new TruthTableAudit(base, { learnedClauseReductionThreshold: 1 });
-      const actual = solver.enumerateModels();
+      const actual = expectCompleteModels(solver.enumerateModels());
       assert.strictEqual(actual.length, 3 ** k);
       assertModelListsEqual(actual, reference);
-      assertModelListsEqual(getAllSolutions(expr), reference);
+      assertModelListsEqual(expectCompleteModels(getAllSolutions(expr)), reference);
       assert.strictEqual(solver.remaining.length, 0);
       if (k > 0) assert.ok(solver.nonvacuousAnalyses > 0);
       solver.checkInvariants();
@@ -945,9 +971,12 @@ describe('persistent enumeration production path', () => {
     const solver = new EnumerationAudit(compile(expr), {
       enablePle: false,
       learnedClauseReductionThreshold: 32,
-      maxConflicts: 295_250, // 10x the independently validated 29525-conflict calibration
+      conflictBudget: 295_250, // 10x the independently validated 29525-conflict calibration
     });
-    const models = solver.enumerateModels();
+    // One enumeration-wide budget spans every model search plus the terminal
+    // search; the calibrated 29525 conflicts never approach it, so the run
+    // completes rather than returning 'unknown'.
+    const models = expectCompleteModels(solver.enumerateModels());
     assert.strictEqual(models.length, 59_049);
     assert.strictEqual(models.length, 3 ** 10);
     const keys = new Set<string>();

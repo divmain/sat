@@ -5,7 +5,14 @@ import type { Clause, CompiledCnf } from '../src/compile.js';
 import { and, implies, not, or, Value } from '../src/expr.js';
 import type { BooleanExpr } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
-import { cnfToExpr, expressionValue, mulberry32, phpCnf, random3Cnf } from './helpers.js';
+import {
+  cnfToExpr,
+  expectSatModel,
+  expressionValue,
+  mulberry32,
+  phpCnf,
+  random3Cnf,
+} from './helpers.js';
 import { IncrementalAudit, internals, literal } from './incremental-helpers.js';
 
 const key = (clause: Clause | null): string | null =>
@@ -254,7 +261,7 @@ describe('abandoned propagation and scheduling lifecycle', () => {
       assert.strictEqual(internals(solver).scheduling, null);
       assert.strictEqual(internals(solver).searchState, null);
     }
-    assert.ok(solver.solveAssuming() !== null);
+    assert.strictEqual(solver.solveAssuming().status, 'sat');
     assert.strictEqual(internals(solver).scheduling, null);
   });
 
@@ -275,13 +282,13 @@ describe('abandoned propagation and scheduling lifecycle', () => {
       if (admission) solver.addPermanentClause([3]);
       const result = solver.solveAssuming();
       if (admission) {
-        assert.strictEqual(
+        assert.deepStrictEqual(
           result,
-          null,
+          { status: 'unsat', core: {} },
           'pending gate conflicts with the newly admitted root unit',
         );
       } else {
-        assert.strictEqual(result?.v1, Value.TRUE);
+        assert.strictEqual(expectSatModel(result).v1, Value.TRUE);
         assert.strictEqual(solver.stats.decisions, 0, 'gate implication precedes decision/SAT');
         assert.strictEqual(solver.stats.propagations, 3, 'reinspection does not recount roots');
       }
@@ -299,18 +306,32 @@ describe('abandoned propagation and scheduling lifecycle', () => {
     solver.finishSearch();
     assert.strictEqual(internals(solver).propagationCursor, null);
     assert.strictEqual(solver.qhead, solver.trail.length);
-    const model = solver.solveAssuming({ v0: Value.FALSE, v1: Value.FALSE });
-    assert.strictEqual(model?.v1, Value.FALSE);
+    const gated = solver.solveAssuming({ v0: Value.FALSE, v1: Value.FALSE });
+    assert.strictEqual(expectSatModel(gated).v1, Value.FALSE);
   });
 
-  it('retains the throwing maxConflicts contract and cleanup for partial root scans', () => {
-    const solver = new Solver(rawCnf(3, [[0], [3], [4], [1, 2], [1, 4]]), { maxConflicts: 0 });
+  it('applies the non-throwing conflictBudget contract and cleanup for partial root scans', () => {
+    // Budget zero: the explicit startup exception still permits the initial
+    // root-propagation pass (here resumable across slices), and the terminal
+    // root conflict it finds establishes UNSAT with precedence over the
+    // spent budget.
+    const solver = new Solver(rawCnf(3, [[0], [3], [4], [1, 2], [1, 4]]), { conflictBudget: 0 });
     assert.strictEqual(solver.searchSlice(1), 'paused');
-    assert.throws(() => solver.searchSlice(1), /conflict/i);
+    assert.strictEqual(solver.searchSlice(1), 'unsat');
+    assert.strictEqual(solver.stats.conflicts, 1, 'the terminal root conflict counts once');
     solver.finishSearch();
     solver.cancelUntil(0);
-    assert.strictEqual(solver.qhead, 0);
-    assert.strictEqual(solver.solveAssuming(), null, 'established root UNSAT survives cap throw');
+    // The conflict was found mid-scan: the cursor is gone, unexamined root
+    // events stay queued (never mistaken for a fixpoint), and the established
+    // permanent UNSAT short-circuits every later call regardless.
+    assert.strictEqual(internals(solver).propagationCursor, null);
+    assert.ok(solver.qhead <= solver.trail.length);
+    assert.strictEqual(internals(solver).permanentUnsat, true);
+    assert.deepStrictEqual(
+      solver.solveAssuming(),
+      { status: 'unsat', core: {} },
+      'established root UNSAT survives budget exhaustion',
+    );
   });
 
   for (const quantum of [1, 7, 64]) {
@@ -338,9 +359,11 @@ describe('abandoned propagation and scheduling lifecycle', () => {
       }
       assert.ok(pauses > 0);
       if (quantum === 1) assert.ok(boundaryPauses > 0);
-      if (quantum === 64) assert.ok(pauses < expected.length, 'many searches share each allowance');
+      if (quantum === 64) {
+        assert.ok(pauses < expected.models.length, 'many searches share each allowance');
+      }
       assert.deepStrictEqual(result.value, expected);
-      assert.strictEqual(expected.length, 32);
+      assert.strictEqual(expected.models.length, 32);
       assert.deepStrictEqual(snapshot(solver), snapshot(whole));
       assert.deepStrictEqual(solver.events, whole.events);
     });
@@ -351,18 +374,19 @@ describe('abandoned propagation and scheduling lifecycle', () => {
     const driver = empty.enumerateSlices(1);
     assert.deepStrictEqual(driver.next(), { value: 'paused', done: false });
     assert.ok(empty.clauses.some((clause) => clause.lits.length === 0));
-    assert.deepStrictEqual(driver.next(), { value: [{}], done: true });
+    assert.deepStrictEqual(driver.next(), {
+      value: { status: 'complete', models: [{}] },
+      done: true,
+    });
 
     const expr: BooleanExpr = and('a', implies('a', 'b'), implies('a', 'c'));
     const solver = new Solver(compile(expr));
     const abandoned = solver.enumerateSlices(1);
     assert.strictEqual(abandoned.next().done, false);
-    abandoned.return([]);
+    abandoned.return({ status: 'unknown', models: [], reason: 'aborted' });
     assert.strictEqual(internals(solver).propagationCursor, null);
     assert.deepStrictEqual(solver.trailLim, []);
-    const model = solver.solveAssuming();
-    assert.ok(model !== null);
-    assert.strictEqual(expressionValue(expr, model), Value.TRUE);
+    assert.strictEqual(expressionValue(expr, expectSatModel(solver.solveAssuming())), Value.TRUE);
   });
 
   it('cleans up a finite enumeration hook failure after earlier pauses and remains reusable', () => {
@@ -386,9 +410,7 @@ describe('abandoned propagation and scheduling lifecycle', () => {
     assert.strictEqual(internals(solver).propagationCursor, null);
     assert.deepStrictEqual(solver.trailLim, []);
     fail = false;
-    const model = solver.solveAssuming();
-    assert.ok(model !== null);
-    assert.strictEqual(expressionValue(expr, model), Value.TRUE);
+    assert.strictEqual(expressionValue(expr, expectSatModel(solver.solveAssuming())), Value.TRUE);
   });
 
   it('validates internal quanta and supports cached verdicts and changed slice sizes', () => {

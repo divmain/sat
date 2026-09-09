@@ -64,9 +64,15 @@ function astStats(node: Variable | BooleanExpr): {
   } else if ('or' in node) {
     childNodes = node.or;
     kind = 'or';
-  } else {
+  } else if ('not' in node) {
     childNodes = [node.not];
     kind = 'not';
+  } else if ('atMost' in node) {
+    childNodes = node.atMost.exprs;
+    kind = 'atMost';
+  } else {
+    childNodes = node.atLeast.exprs;
+    kind = 'atLeast';
   }
   const childStats = childNodes.map((child) => astStats(child));
   const depth = 1 + Math.max(0, ...childStats.map((stats) => stats.depth));

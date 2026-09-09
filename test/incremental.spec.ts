@@ -1,13 +1,19 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 import { and, createSolver, implies, not, or, Value, xor } from '../src/index.js';
-import type { SatSolver, VariableAssignments, VariablePriority } from '../src/index.js';
+import type {
+  SatSolver,
+  SolveResult,
+  VariableAssignments,
+  VariablePriority,
+} from '../src/index.js';
 import { compile, compileCount, varOf } from '../src/compile.js';
 import { Solver } from '../src/solver.js';
 import {
   assertModelListsEqual,
   assertModelShape,
   cnfToExpr,
+  expectSatModel,
   modelKey,
   mulberry32,
   random3Cnf,
@@ -36,14 +42,14 @@ describe('createSolver public lifecycle', () => {
     const countBefore = compileCount.value;
     const solver: SatSolver = createSolver(expr, { variablePriority: undefined });
     assert.strictEqual(compileCount.value, countBefore + 1, 'factory invokes the REAL compile()');
-    assert.deepStrictEqual(Object.keys(solver), ['solve']);
+    assert.deepStrictEqual(Object.keys(solver), ['solve', 'solveAsync', 'add', 'variables']);
     const instances = new Set<Solver>();
-    const searches = Solver.prototype.solve;
+    const searches = Solver.prototype.search;
     const boundary = Solver.prototype.solveAssuming;
     let searchCalls = 0;
     t.mock.method(
       Solver.prototype,
-      'solve',
+      'search',
       function (this: Solver, assumptions: readonly number[] = []) {
         instances.add(this);
         searchCalls += 1;
@@ -74,9 +80,9 @@ describe('createSolver public lifecycle', () => {
       const assumptions = Object.fromEntries(entries);
       samples.add(modelKey(assumptions));
       const stats = counters(999);
-      const actual = solver.solve(assumptions, stats);
+      const actual = solver.solve(assumptions, { stats });
       assertResult(expr, assumptions, reference, actual);
-      if (actual === null) unsat += 1;
+      if (actual.status === 'unsat') unsat += 1;
       else sat += 1;
       assert.strictEqual(
         compileCount.value,
@@ -98,7 +104,10 @@ describe('createSolver public lifecycle', () => {
     const reference = referenceModels(expr);
     const solver = createSolver(expr);
     const stats = counters(999);
-    assert.strictEqual(solver.solve({ a: Value.TRUE }, stats), null);
+    assert.deepStrictEqual(solver.solve({ a: Value.TRUE }, { stats }), {
+      status: 'unsat',
+      core: { a: Value.TRUE },
+    });
     assert.deepStrictEqual(stats, {
       ...counters(),
       propagations: 2,
@@ -114,7 +123,7 @@ describe('createSolver public lifecycle', () => {
       { x: Value.FALSE },
     ];
     for (const assumptions of assumptionSets) {
-      assertResult(expr, assumptions, reference, solver.solve(assumptions, stats));
+      assertResult(expr, assumptions, reference, solver.solve(assumptions, { stats }));
       assert.strictEqual(stats.learnedClauses, 0, 'do not recount the retained unit');
       assert.strictEqual(stats.learnedClausesCurrent, 1, 'do not zero a live database');
     }
@@ -135,9 +144,8 @@ describe('createSolver public lifecycle', () => {
       assertResult(expr, assumptions, reference, solver.solve(assumptions));
     }
     assert.deepStrictEqual(solver.solve({ c: Value.FALSE }), {
-      a: Value.FALSE,
-      b: Value.TRUE,
-      c: Value.FALSE,
+      status: 'sat',
+      model: { a: Value.FALSE, b: Value.TRUE, c: Value.FALSE },
     });
   });
 
@@ -154,7 +162,7 @@ describe('createSolver public lifecycle', () => {
     ];
     for (const assumptions of assumptionSets) {
       const stats = counters(999);
-      assertResult(expr, assumptions, reference, solver.solve(assumptions, stats));
+      assertResult(expr, assumptions, reference, solver.solve(assumptions, { stats }));
       assert.deepStrictEqual(stats, counters(), 'no heuristic/implication work on a total root');
     }
   });
@@ -164,13 +172,13 @@ describe('createSolver public lifecycle', () => {
     const unsat = createSolver(or());
     for (let call = 0; call < 3; call += 1) {
       const stats = counters(999);
-      assert.deepStrictEqual(sat.solve(undefined, stats), {});
+      assert.deepStrictEqual(sat.solve(undefined, { stats }), { status: 'sat', model: {} });
       assert.deepStrictEqual(stats, counters());
-      assert.strictEqual(unsat.solve({}, stats), null);
+      assert.deepStrictEqual(unsat.solve({}, { stats }), { status: 'unsat', core: {} });
       assert.deepStrictEqual(stats, counters());
       for (const solver of [sat, unsat]) {
         assert.throws(
-          () => solver.solve({ missing: Value.UNSET }, stats),
+          () => solver.solve({ missing: Value.UNSET }, { stats }),
           /unknown assumption variable: "missing"/,
         );
       }
@@ -180,12 +188,14 @@ describe('createSolver public lifecycle', () => {
   it('returns detached numeric models and retains the formula compiled at construction', () => {
     const expr = { and: [or('a', 'b')] };
     const solver = createSolver(expr);
-    const model = solver.solve({ a: Value.FALSE });
-    assert.ok(model !== null);
+    const model = expectSatModel(solver.solve({ a: Value.FALSE }));
     model.a = Value.TRUE;
     model.b = Value.FALSE;
     expr.and.push(and('later'));
-    assert.deepStrictEqual(solver.solve({ a: Value.FALSE }), { a: Value.FALSE, b: Value.TRUE });
+    assert.deepStrictEqual(solver.solve({ a: Value.FALSE }), {
+      status: 'sat',
+      model: { a: Value.FALSE, b: Value.TRUE },
+    });
     assert.throws(
       () => solver.solve({ later: Value.UNSET }),
       /unknown assumption variable: "later"/,
@@ -202,7 +212,10 @@ describe('createSolver public lifecycle', () => {
         assert.strictEqual(internals(this).restartBaseConflicts, 100);
         assert.strictEqual(internals(this).restartPolicy.kind, 'ema');
         assert.strictEqual(internals(this).learnedClauseReductionThreshold, 10_000);
-        assert.strictEqual(internals(this).maxConflicts, undefined);
+        assert.strictEqual(internals(this).conflictBudget, undefined);
+        // The factory never forwards a constructor budget; per-call budgets
+        // arrive as solveAssuming's third argument instead.
+        assert.strictEqual(args[2], undefined);
         return original.apply(this, args);
       },
     );
@@ -215,11 +228,12 @@ describe('createSolver public lifecycle', () => {
       restartPolicy: 'luby',
       restartBaseConflicts: 1,
       learnedClauseReductionThreshold: 1,
-      maxConflicts: 0,
+      // Budgets are per-call options, not factory state: this is ignored.
+      conflictBudget: 0,
     };
     assert.deepStrictEqual(createSolver(or('a', 'b'), options).solve({ a: Value.FALSE }), {
-      a: Value.FALSE,
-      b: Value.TRUE,
+      status: 'sat',
+      model: { a: Value.FALSE, b: Value.TRUE },
     });
     assert.deepStrictEqual(ignoredStats, counters(999));
   });
@@ -306,7 +320,7 @@ describe('incremental MiniSat prefix in the shared decision loop', () => {
       const assumptions: VariableAssignments = trailing
         ? { a: Value.TRUE, b: Value.TRUE, c: Value.TRUE }
         : { a: Value.TRUE, b: Value.TRUE };
-      assert.strictEqual(solver.solveAssuming(assumptions), null);
+      assert.strictEqual(solver.solveAssuming(assumptions).status, 'unsat');
       assert.strictEqual(solver.analyses.length, 1);
       assert.strictEqual(solver.analyses[0].from, 2);
       assert.strictEqual(solver.analyses[0].backjumpLevel, 1);
@@ -334,7 +348,10 @@ describe('incremental MiniSat prefix in the shared decision loop', () => {
     const expr = implies('a', 'b');
     const solver = new IncrementalAudit(compile(expr));
     const stats = counters(999);
-    assert.strictEqual(solver.solveAssuming({ a: Value.TRUE, b: Value.FALSE }, stats), null);
+    assert.deepStrictEqual(solver.solveAssuming({ a: Value.TRUE, b: Value.FALSE }, stats), {
+      status: 'unsat',
+      core: { a: Value.TRUE, b: Value.FALSE },
+    });
     assert.deepStrictEqual(stats, { ...counters(), propagations: 1 });
     assert.strictEqual(internals(solver).permanentUnsat, false);
     assertRoot(solver);
@@ -345,13 +362,22 @@ describe('incremental MiniSat prefix in the shared decision loop', () => {
   it('checks assumptions against a newly learned total root model without caching call-local UNSAT', () => {
     const expr = and(or('a', 'b'), or('a', not('b')), or(not('a'), 'b'));
     const solver = new IncrementalAudit(compile(expr));
-    assert.deepStrictEqual(solver.solveAssuming(), { a: Value.TRUE, b: Value.TRUE });
+    assert.deepStrictEqual(solver.solveAssuming(), {
+      status: 'sat',
+      model: { a: Value.TRUE, b: Value.TRUE },
+    });
     assert.strictEqual(solver.trail.length, 2, 'learned root unit and its root implication');
     const stats = counters(999);
-    assert.strictEqual(solver.solveAssuming({ b: Value.FALSE }, stats), null);
+    assert.deepStrictEqual(solver.solveAssuming({ b: Value.FALSE }, stats), {
+      status: 'unsat',
+      core: { b: Value.FALSE },
+    });
     assert.deepStrictEqual(stats, { ...counters(), learnedClausesCurrent: 1 });
     assert.strictEqual(internals(solver).permanentUnsat, false);
-    assert.deepStrictEqual(solver.solveAssuming(), { a: Value.TRUE, b: Value.TRUE });
+    assert.deepStrictEqual(solver.solveAssuming(), {
+      status: 'sat',
+      model: { a: Value.TRUE, b: Value.TRUE },
+    });
     assertRoot(solver);
     solver.assertCounters();
   });
@@ -396,15 +422,18 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
       const solver = new IncrementalAudit(compile(expr));
       const stats = counters(999);
       assert.strictEqual(
-        solver.solveAssuming(assumed ? { a: Value.TRUE } : undefined, stats),
-        null,
+        solver.solveAssuming(assumed ? { a: Value.TRUE } : undefined, stats).status,
+        'unsat',
       );
       assert.ok(stats.conflicts > 0 && stats.learnedClauses > 0);
       assert.strictEqual(internals(solver).permanentUnsat, true);
       const lifetime = { ...solver.stats };
       const assumptionSets: VariableAssignments[] = [{}, { a: Value.FALSE }, { b: Value.UNSET }];
       for (const assumptions of assumptionSets) {
-        assert.strictEqual(solver.solveAssuming(assumptions, stats), null);
+        assert.deepStrictEqual(solver.solveAssuming(assumptions, stats), {
+          status: 'unsat',
+          core: {},
+        });
         assert.deepStrictEqual(stats, {
           ...counters(),
           learnedClausesCurrent: lifetime.learnedClausesCurrent,
@@ -440,7 +469,7 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
       for (const value of [Value.UNSET, Value.FALSE, Value.TRUE]) {
         const stats = counters(999);
         assert.throws(
-          () => solver.solve({ a: Value.FALSE, missing: value }, stats),
+          () => solver.solve({ a: Value.FALSE, missing: value }, { stats }),
           /unknown assumption variable: "missing"/,
         );
         assert.strictEqual(stats.decisions, 0, 'zero before validation, even after cached UNSAT');
@@ -448,7 +477,7 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
       for (const value of invalid) {
         const stats = counters(999);
         assert.throws(
-          () => solver.solve({ a: value } as VariableAssignments, stats),
+          () => solver.solve({ a: value } as VariableAssignments, { stats }),
           /invalid assumption value for "a"/,
         );
         assert.strictEqual(stats.decisions, 0);
@@ -480,7 +509,7 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
     const solver = new IncrementalAudit(base);
     for (const value of [Value.FALSE, Value.TRUE]) {
       const assumptions = Object.fromEntries(names.map((name) => [name, value]));
-      const model = solver.solveAssuming(assumptions);
+      const model = expectSatModel(solver.solveAssuming(assumptions));
       assert.deepStrictEqual(model, assumptions);
       assertModelShape(model, expr);
       const call = solver.calls;
@@ -495,10 +524,9 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
     }
     const inherited = Object.create({ missing: Value.TRUE }) as VariableAssignments;
     Object.defineProperty(inherited, '__proto__', { value: Value.FALSE, enumerable: true });
-    const model = solver.solveAssuming(inherited);
-    assert.ok(model !== null);
-    assertModelShape(model, expr);
-    assert.strictEqual(model.__proto__, Value.FALSE);
+    const inheritedModel = expectSatModel(solver.solveAssuming(inherited));
+    assertModelShape(inheritedModel, expr);
+    assert.strictEqual(inheritedModel.__proto__, Value.FALSE);
     solver.assertCounters();
   });
 
@@ -619,19 +647,25 @@ describe('incremental validation, cached UNSAT, and exception cleanup', () => {
     solver.assertCounters();
   });
 
-  it('remembers a proven root conflict before a hard-cap exception can leave an already-drained queue', () => {
+  it('remembers a proven root conflict when the budget-spending terminal conflict leaves an already-drained queue', () => {
     const expr = and(or('a', 'b'), not('a'), not('b'));
-    const solver = new Solver(compile(expr), { maxConflicts: 1 });
+    const solver = new Solver(compile(expr));
     const stats = counters(999);
-    assert.throws(
-      () => solver.solveAssuming(undefined, stats),
-      /maximum conflict budget exhausted \(1\)/,
-    );
+    // Verdict at the limit: the first (terminal, root) conflict establishes
+    // UNSAT without analysis and takes precedence over the spent per-call
+    // budget — no throw, no 'unknown'.
+    assert.deepStrictEqual(solver.solveAssuming(undefined, stats, 1), {
+      status: 'unsat',
+      core: {},
+    });
     assert.strictEqual(stats.conflicts, 1);
     assert.strictEqual(internals(solver).permanentUnsat, true);
     const lifetime = { ...solver.stats };
     for (let repeat = 0; repeat < 4; repeat += 1) {
-      assert.strictEqual(solver.solveAssuming(undefined, stats), null);
+      assert.deepStrictEqual(solver.solveAssuming(undefined, stats), {
+        status: 'unsat',
+        core: {},
+      });
       assert.deepStrictEqual(stats, counters());
       assert.deepStrictEqual(solver.stats, lifetime);
       assertRoot(solver);
@@ -691,18 +725,27 @@ describe('incremental stats scope and retained database cadence', () => {
   it('keeps output calls isolated, including omitted/reused/distinct outputs and validation-error live snapshots', () => {
     const expr = lostAssumption();
     const solver = createSolver(expr);
-    assert.strictEqual(solver.solve({ a: Value.TRUE }), null, 'learning with no output object');
+    assert.deepStrictEqual(solver.solve({ a: Value.TRUE }), {
+      status: 'unsat',
+      core: { a: Value.TRUE },
+    });
     const first = counters(999);
-    assert.strictEqual(solver.solve({ a: Value.TRUE }, first), null);
+    assert.deepStrictEqual(solver.solve({ a: Value.TRUE }, { stats: first }), {
+      status: 'unsat',
+      core: { a: Value.TRUE },
+    });
     assert.deepStrictEqual(first, { ...counters(), learnedClausesCurrent: 1 });
     const second = counters(-99);
-    assert.ok(solver.solve(undefined, second) !== null);
+    assert.strictEqual(solver.solve(undefined, { stats: second }).status, 'sat');
     assert.deepStrictEqual(second, { ...counters(), decisions: 1, learnedClausesCurrent: 1 });
     assert.deepStrictEqual(first, { ...counters(), learnedClausesCurrent: 1 });
-    assert.throws(() => solver.solve({ unknown: Value.UNSET }, second), /unknown assumption/);
+    assert.throws(
+      () => solver.solve({ unknown: Value.UNSET }, { stats: second }),
+      /unknown assumption/,
+    );
     assert.deepStrictEqual(second, { ...counters(), learnedClausesCurrent: 1 });
     assert.throws(
-      () => solver.solve({ a: true } as unknown as VariableAssignments, first),
+      () => solver.solve({ a: true } as unknown as VariableAssignments, { stats: first }),
       /invalid assumption/,
     );
     assert.deepStrictEqual(first, { ...counters(), learnedClausesCurrent: 1 });
@@ -794,13 +837,12 @@ describe('incremental stats scope and retained database cadence', () => {
     );
   });
 
-  it('keeps the hard conflict cap lifetime-private across per-call output resets and never substitutes UNSAT for exhaustion', () => {
+  it('scopes the hard conflict budget per call across output resets and never substitutes UNSAT for exhaustion', () => {
     const expr = gadgets(3);
     let target = 'x0';
     const solver = new Solver(compile(expr), {
       restartPolicy: 'luby',
       restartBaseConflicts: 1,
-      maxConflicts: 3,
       variablePriority: (unassigned) => {
         if (unassigned.includes(target)) return [target, true];
         const x = unassigned.find((name) => name.startsWith('x'));
@@ -810,24 +852,23 @@ describe('incremental stats scope and retained database cadence', () => {
     const stats = counters(999);
     for (let call = 0; call < 3; call += 1) {
       target = `x${call}`;
-      if (call < 2) {
-        assertResult(
-          expr,
-          { a: Value.TRUE, b: Value.TRUE },
-          referenceModels(expr),
-          solver.solveAssuming({ a: Value.TRUE, b: Value.TRUE }, stats),
-        );
-      } else {
-        assert.throws(
-          () => solver.solveAssuming({ a: Value.TRUE, b: Value.TRUE }, stats),
-          /maximum conflict budget exhausted \(3\)/,
-        );
-      }
+      // Each call spends exactly one conflict: the budget-spending atomic
+      // transaction completes, then the call reports 'unknown' — never
+      // UNSAT, never a throw — with the lifetime ledger unrewound.
+      assert.deepStrictEqual(solver.solveAssuming({ a: Value.TRUE, b: Value.TRUE }, stats, 1), {
+        status: 'unknown',
+        reason: 'conflictBudget',
+      });
       assert.strictEqual(stats.conflicts, 1, 'per-call work, not cumulative output');
-      assert.strictEqual(internals(solver).conflictsSoFar, call + 1, 'cap does not rewind');
+      assert.strictEqual(
+        internals(solver).conflictsSoFar,
+        call + 1,
+        'budget accounting does not rewind',
+      );
       assert.strictEqual(internals(solver).permanentUnsat, false);
       assertRoot(solver);
     }
+    // The handle stays coherent and reusable: an unbudgeted call completes.
     assertResult(
       expr,
       { a: Value.FALSE },
@@ -965,15 +1006,41 @@ describe('incremental independent acceptance oracles reject invalid evidence', (
       Object.create({ a: Value.TRUE, b: Value.FALSE }),
       { a: Value.FALSE, b: Value.FALSE },
       { a: Value.FALSE, b: Value.TRUE },
-      null,
     ]) {
+      const actual = { status: 'sat', model: invalid } as unknown as SolveResult;
+      assert.throws(() => assertResult(expr, assumptions, reference, actual), {
+        name: 'AssertionError',
+      });
+    }
+    // A SAT-expected case answered with UNSAT is a verdict mismatch even
+    // though this core would pass the soundness oracle on its own.
+    assert.throws(
+      () =>
+        assertResult(expr, assumptions, reference, {
+          status: 'unsat',
+          core: { a: Value.TRUE },
+        }),
+      { name: 'AssertionError' },
+    );
+    // Cores that escape the supplied assumptions, contradict them, or leave
+    // base ∧ core satisfiable are rejected even when the verdict is right.
+    // (and('a') under a=FALSE: the only sound core is {a: FALSE} itself.)
+    for (const badCore of [{ b: Value.FALSE }, {}, { a: Value.TRUE }] as VariableAssignments[]) {
       assert.throws(
-        () => assertResult(expr, assumptions, reference, invalid as VariableAssignments),
+        () =>
+          assertResult(and('a'), { a: Value.FALSE }, referenceModels(and('a')), {
+            status: 'unsat',
+            core: badCore,
+          }),
         { name: 'AssertionError' },
       );
     }
     assert.throws(
-      () => assertResult(and('a', not('a')), {}, [], { a: Value.TRUE }),
+      () =>
+        assertResult(and('a', not('a')), {}, [], {
+          status: 'sat',
+          model: { a: Value.TRUE },
+        }),
       /reference verdict/,
     );
     assert.strictEqual(

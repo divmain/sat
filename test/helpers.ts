@@ -4,10 +4,100 @@
 
 import assert from 'node:assert';
 import { isDeepStrictEqual } from 'node:util';
-import { and, getVariables, implies, isVariable, not, or, Value, xor } from '../src/expr.js';
+import {
+  and,
+  atLeast,
+  atMost,
+  atMostOne,
+  exactly,
+  getVariables,
+  implies,
+  isVariable,
+  not,
+  or,
+  Value,
+  xor,
+} from '../src/expr.js';
 import type { BooleanExpr, Variable, VariableAssignments } from '../src/expr.js';
-import type { Clause } from '../src/compile.js';
+import { isNeg, litValue, varOf } from '../src/compile.js';
+import type { Clause, CompiledCnf } from '../src/compile.js';
 import type { BinaryWatchEntry, WatchEntry } from '../src/solver.js';
+import type { EnumerateResult, SolveResult } from '../src/index.js';
+
+// ---------------------------------------------------------------------------
+// Rich-result unwrapping and UNSAT-core oracles (Design § UNSAT Cores)
+// ---------------------------------------------------------------------------
+
+// Unwrap a SolveResult that the test expects to be SAT. The 'unknown' status
+// exists in the type but is not producible yet (budgets/async land later), so
+// any non-'sat' status fails here.
+export function expectSatModel(result: SolveResult): VariableAssignments {
+  if (result.status !== 'sat') {
+    assert.fail(`expected a SAT solve result, got ${result.status}`);
+  }
+  return result.model;
+}
+
+// Unwrap an EnumerateResult that the test expects to be complete.
+export function expectCompleteModels(result: EnumerateResult): VariableAssignments[] {
+  if (result.status !== 'complete') {
+    assert.fail(`expected a complete enumeration result, got ${result.status}`);
+  }
+  return result.models;
+}
+
+// Every core entry matches the model's own value for that name.
+function modelMatchesCore(model: VariableAssignments, core: VariableAssignments): boolean {
+  return Object.entries(core).every(
+    ([name, value]) => Object.hasOwn(model, name) && model[name] === value,
+  );
+}
+
+// The failed-assumption core oracle, brute-force over the independently
+// computed base-model reference (≤ 8 named variables):
+//   - core ⊆ assumptions, with identical values (UNSET entries are not
+//     assumptions and can never appear in a core);
+//   - base ∧ core is UNSAT (no reference model matches the core);
+//   - an EMPTY core is permitted only when no (non-UNSET) assumptions were
+//     supplied or the base formula is already UNSAT on its own — the
+//     assumption-independent proof cases.
+export function assertSoundCore(
+  label: string,
+  reference: readonly VariableAssignments[],
+  assumptions: VariableAssignments,
+  core: VariableAssignments,
+): void {
+  assert.strictEqual(
+    Object.getPrototypeOf(core),
+    Object.prototype,
+    `${label}: the core is an ordinary detached object`,
+  );
+  const supplied = Object.entries(assumptions).filter(([, value]) => value !== Value.UNSET);
+  for (const [name, value] of Object.entries(core)) {
+    assert.ok(
+      value === Value.TRUE || value === Value.FALSE,
+      `${label}: core value for ${JSON.stringify(name)} is TRUE/FALSE`,
+    );
+    assert.ok(
+      supplied.some(
+        ([suppliedName, suppliedValue]) => suppliedName === name && suppliedValue === value,
+      ),
+      `${label}: core entry ${JSON.stringify(
+        name,
+      )} must be one of the call's assumptions (same value)`,
+    );
+  }
+  assert.ok(
+    reference.every((model) => !modelMatchesCore(model, core)),
+    `${label}: base ∧ core must be UNSAT (brute-force over the reference models)`,
+  );
+  if (Object.keys(core).length === 0) {
+    assert.ok(
+      supplied.length === 0 || reference.length === 0,
+      `${label}: an empty core requires no supplied assumptions or an assumption-independent proof`,
+    );
+  }
+}
 
 // Reference evaluator over the BooleanExpr AST, independent of the CNF solver.
 // Requires total numeric assignments; invalid variable reads fail loudly.
@@ -35,6 +125,18 @@ export function expressionValue(
   }
   if ('not' in expr) {
     return expressionValue(expr.not, assignment) === Value.FALSE ? Value.TRUE : Value.FALSE;
+  }
+  if ('atMost' in expr) {
+    const count = expr.atMost.exprs.filter(
+      (subExpr) => expressionValue(subExpr, assignment) === Value.TRUE,
+    ).length;
+    return count <= expr.atMost.k ? Value.TRUE : Value.FALSE;
+  }
+  if ('atLeast' in expr) {
+    const count = expr.atLeast.exprs.filter(
+      (subExpr) => expressionValue(subExpr, assignment) === Value.TRUE,
+    ).length;
+    return count >= expr.atLeast.k ? Value.TRUE : Value.FALSE;
   }
   throw new Error('Invalid BooleanExpr');
 }
@@ -155,6 +257,105 @@ export function assertWatchListsSurvive(
 
 const entryPayload = (entry: WatchEntry | BinaryWatchEntry): number =>
   'blocker' in entry ? entry.blocker : entry.other;
+
+// ---------------------------------------------------------------------------
+// Compiled-CNF encoding oracles (Design § Compiler: cardinality encodings)
+// ---------------------------------------------------------------------------
+
+// Unit-propagation fixpoint over a CompiledCnf with the named variables
+// fixed to `named` (which must be a total assignment over the named
+// universe). Shared engine for the encoding oracles: `conflict` is true when
+// some clause is falsified at the fixpoint, which proves that no auxiliary
+// extension of `named` satisfies the CNF.
+export function propagateCnf(
+  cnf: CompiledCnf,
+  named: VariableAssignments,
+): { assigns: Int8Array; conflict: boolean } {
+  const assigns = new Int8Array(cnf.numVars).fill(Value.UNSET);
+  for (const [name, value] of Object.entries(named)) {
+    const index = cnf.nameToIndex.get(name);
+    if (index === undefined) {
+      throw new Error(`missing named variable: ${name}`);
+    }
+    assigns[index] = value;
+  }
+  let changed = true;
+  let conflict = false;
+  while (changed && !conflict) {
+    changed = false;
+    for (const clause of cnf.clauses) {
+      let unit: number | null = null;
+      let unassignedCount = 0;
+      let satisfied = false;
+      for (const lit of clause.lits) {
+        const value = litValue(lit, assigns);
+        if (value === Value.TRUE) {
+          satisfied = true;
+          break;
+        }
+        if (value === Value.UNSET) {
+          unassignedCount += 1;
+          unit = lit;
+        }
+      }
+      if (satisfied) {
+        continue;
+      }
+      if (unassignedCount === 0) {
+        conflict = true;
+        break;
+      }
+      if (unassignedCount === 1 && unit !== null) {
+        assigns[varOf(unit)] = isNeg(unit) ? Value.FALSE : Value.TRUE;
+        changed = true;
+      }
+    }
+  }
+  return { assigns, conflict };
+}
+
+// The propagation-refutation oracle: unit propagation from the total named
+// assignment falsifies some clause. Every INVALID named valuation of an
+// encoding must satisfy this — named-only termination depends on it.
+export function propagationRefutes(cnf: CompiledCnf, named: VariableAssignments): boolean {
+  return propagateCnf(cnf, named).conflict;
+}
+
+// The extension-correctness oracle: some assignment of the variables
+// propagation left UNSET satisfies every clause (the satisfying auxiliary
+// extension of a valid named valuation). Backtracks over the free variables
+// of the first unsatisfied clause; deliberately independent of the encodings'
+// intended auxiliary semantics.
+export function hasSatisfyingExtension(cnf: CompiledCnf, named: VariableAssignments): boolean {
+  const { assigns, conflict } = propagateCnf(cnf, named);
+  if (conflict) {
+    return false;
+  }
+  const extend = (): boolean => {
+    for (const clause of cnf.clauses) {
+      if (clause.lits.some((lit) => litValue(lit, assigns) === Value.TRUE)) {
+        continue;
+      }
+      // An unsatisfied clause: any satisfying extension must set one of its
+      // remaining literals true. No free literals means it is falsified.
+      const free = clause.lits.filter((lit) => litValue(lit, assigns) === Value.UNSET);
+      if (free.length === 0) {
+        return false;
+      }
+      for (const lit of free) {
+        const variable = varOf(lit);
+        assigns[variable] = isNeg(lit) ? Value.FALSE : Value.TRUE;
+        if (extend()) {
+          return true;
+        }
+        assigns[variable] = Value.UNSET;
+      }
+      return false;
+    }
+    return true;
+  };
+  return extend();
+}
 
 // ---------------------------------------------------------------------------
 // Deterministic randomness
@@ -302,6 +503,132 @@ export function randomFormula(rng: PRNG, options: RandomFormulaOptions): RandomF
   }
   const kinds: ConstructorKind[] = [];
   const generated = generateNode(rng, pool, maxDepth, maxWidth, 0, kinds);
+  return { expr: isVariable(generated) ? and(generated) : generated, kinds };
+}
+
+// ---------------------------------------------------------------------------
+// Random cardinality-formula generation (a SEPARATE versioned stream)
+// ---------------------------------------------------------------------------
+
+// The cardinality generator stream is versioned and frozen: it runs alongside
+// the legacy randomFormula stream with its own seeds and pinned sample counts
+// (Design § Testing Strategy — old cases are never silently re-rolled). Any
+// behavioral change here must bump CARDINALITY_STREAM_VERSION and re-pin the
+// cardinality battery's counts in property.spec.ts.
+export const CARDINALITY_STREAM_VERSION = 1;
+
+export type CardinalityConstructorKind = 'atMost' | 'atLeast' | 'atMostOne' | 'exactly';
+export type ExtendedConstructorKind = ConstructorKind | CardinalityConstructorKind;
+
+const EXTENDED_CONSTRUCTOR_KINDS: readonly ExtendedConstructorKind[] = [
+  'and',
+  'or',
+  'not',
+  'implies',
+  'xor',
+  'atMost',
+  'atLeast',
+  'atMostOne',
+  'exactly',
+];
+
+export interface RandomCardinalityFormula {
+  expr: BooleanExpr;
+  // Constructor choices in the order the generator made them, deterministic
+  // under a fixed seed — the battery asserts every kind is exercised.
+  kinds: ExtendedConstructorKind[];
+}
+
+// Interior-node choice. Cardinality nodes draw their operand count in
+// 1..maxWidth and their bound in 0..width+1, so edge folds (k = 0, k = n,
+// k > n) arise in-stream; operands are independent draws from the (small)
+// pool, so multiplicity repeats arise naturally. Depth-bounded like
+// generateNode: at the depth limit a bare variable.
+function generateCardinalityNode(
+  rng: PRNG,
+  pool: readonly Variable[],
+  maxDepth: number,
+  maxWidth: number,
+  depth: number,
+  kinds: ExtendedConstructorKind[],
+): Variable | BooleanExpr {
+  if (depth >= maxDepth) {
+    return rng.pick(pool);
+  }
+  const child = (): Variable | BooleanExpr =>
+    generateCardinalityNode(rng, pool, maxDepth, maxWidth, depth + 1, kinds);
+  const kind = EXTENDED_CONSTRUCTOR_KINDS[rng.nextInt(EXTENDED_CONSTRUCTOR_KINDS.length)];
+  if (kind === undefined) {
+    throw new Error('cardinality generator drew no constructor kind');
+  }
+  kinds.push(kind);
+  if (kind === 'and') {
+    const width = 1 + rng.nextInt(maxWidth);
+    return and(...Array.from({ length: width }, child));
+  }
+  if (kind === 'or') {
+    const width = 1 + rng.nextInt(maxWidth);
+    return or(...Array.from({ length: width }, child));
+  }
+  if (kind === 'not') {
+    return not(child());
+  }
+  if (kind === 'implies') {
+    return implies(child(), child());
+  }
+  if (kind === 'xor') {
+    return xor(child(), child());
+  }
+  // Cardinality nodes: draw the operand count first, then (for the k-taking
+  // constructors) the bound, then the operands — a fixed draw order keeps the
+  // stream reproducible.
+  const width = 1 + rng.nextInt(maxWidth);
+  if (kind === 'atMostOne') {
+    return atMostOne(...Array.from({ length: width }, child));
+  }
+  const k = rng.nextInt(width + 2);
+  if (kind === 'atMost') {
+    return atMost(k, ...Array.from({ length: width }, child));
+  }
+  if (kind === 'atLeast') {
+    return atLeast(k, ...Array.from({ length: width }, child));
+  }
+  return exactly(k, ...Array.from({ length: width }, child));
+}
+
+// Generate one random formula mixing cardinality and Boolean constructors.
+// Same option/validation contract as randomFormula; the cardinality battery
+// uses its own seeds, never the legacy stream's.
+export function randomCardinalityFormula(
+  rng: PRNG,
+  options: RandomFormulaOptions,
+): RandomCardinalityFormula {
+  const { maxDepth, maxWidth, maxVariables, variables } = options;
+  if (!Number.isInteger(maxDepth) || maxDepth < 1) {
+    throw new RangeError(
+      `randomCardinalityFormula requires maxDepth to be an integer >= 1 (got ${maxDepth})`,
+    );
+  }
+  if (!Number.isInteger(maxWidth) || maxWidth < 2) {
+    throw new RangeError(
+      'randomCardinalityFormula requires maxWidth to be an integer >= 2, because implies/xor introduce binary junction nodes',
+    );
+  }
+  let pool: readonly Variable[] = variables ?? [];
+  if (variables === undefined) {
+    const span = maxVariables ?? DEFAULT_VARIABLE_ALPHABET.length;
+    if (!Number.isInteger(span) || span < 1) {
+      throw new RangeError(
+        `randomCardinalityFormula requires maxVariables to be an integer >= 1 (got ${span})`,
+      );
+    }
+    pool = DEFAULT_VARIABLE_ALPHABET.slice(0, span);
+  }
+  if (pool.length === 0) {
+    throw new RangeError('randomCardinalityFormula requires at least one variable in the pool');
+  }
+  const kinds: ExtendedConstructorKind[] = [];
+  const generated = generateCardinalityNode(rng, pool, maxDepth, maxWidth, 0, kinds);
   return { expr: isVariable(generated) ? and(generated) : generated, kinds };
 }
 

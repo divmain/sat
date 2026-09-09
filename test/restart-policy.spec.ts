@@ -236,7 +236,7 @@ describe('solver wiring of the extracted policies', () => {
   const php76 = () => compile(cnfToExpr(phpCnf(7, 6)));
 
   it('drives genuine restarts through the default EMA policy on a real search', () => {
-    const solver = new Solver(php76(), { enablePle: true, maxConflicts: 7_230 });
+    const solver = new Solver(php76(), { enablePle: true, conflictBudget: 7_230 });
     assert.strictEqual(solver.solve(), false, 'seven pigeons cannot occupy six holes');
     const policy: RestartPolicy = internals(solver).restartPolicy;
     assert.strictEqual(policy.kind, 'ema');
@@ -249,7 +249,7 @@ describe('solver wiring of the extracted policies', () => {
     const solver = new Solver(php76(), {
       enablePle: true,
       restartPolicy: 'luby',
-      maxConflicts: 7_230,
+      conflictBudget: 7_230,
     });
     assert.strictEqual(solver.solve(), false);
     const policy = internals(solver).restartPolicy;

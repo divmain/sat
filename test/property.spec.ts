@@ -1,7 +1,9 @@
 // Seeded cross-validation of both solver variants against the naive reference
 // enumerator (Design § Testing and Benchmarking Strategy).
 // The full harness: 512 seeds per variable pool (original a-h plus arbitrary
-// string names), over <= 8 named variables covering all five constructors, with
+// string names), over <= 8 named variables covering all five constructors, plus
+// a SEPARATE versioned cardinality generator stream (never re-rolling the
+// legacy stream) with its own battery, seeds, and pinned sample counts, with
 //   - the verdict triangle (getSolution sat ⟺ getAllSolutions nonempty ⟺
 //     reference count > 0),
 //   - verdict stability over three fresh solves of the same expression and
@@ -10,10 +12,11 @@
 //   - per-model shape (key set / no-UNSET) and reference-validity checks with
 //     duplicate detection,
 //   - random assumption subsets per formula (both consistent and
-//     contradictory): getSolution(f, { assumptions }) is null iff no
+//     contradictory): getSolution(f, { assumptions }) is 'unsat' iff no
 //     reference model extends the assumptions; every returned model extends
-//     them; enumeration under assumptions matches the reference extension
-//     count.
+//     them; every UNSAT answer carries a sound failed-assumption core
+//     (core ⊆ assumptions, base ∧ core brute-force UNSAT); enumeration under
+//     assumptions matches the reference extension count.
 // Everything is seeded (mulberry32, fixed seeds) — the suite is
 // deterministic across runs by construction.
 // Each pool runs through the public getSolution/getAllSolutions pair and through
@@ -25,15 +28,21 @@ import assert from 'node:assert';
 import { and, getAllSolutions, getSolution, implies, not, or, Value, xor } from '../src';
 import { compile } from '../src/compile';
 import { getVariables } from '../src/expr';
-import { Solver } from '../src/solver';
-import type { BooleanExpr, SolveOptions, VariableAssignments } from '../src';
+import { createSolverStats, Solver } from '../src/solver';
+import type { SearchVerdict } from '../src/solver';
+import type { BooleanExpr, SolveOptions, SolveResult, VariableAssignments } from '../src';
 import {
   assertModelListsEqual,
   assertModelShape,
+  assertSoundCore,
+  CARDINALITY_STREAM_VERSION,
+  expectCompleteModels,
+  expectSatModel,
   expressionValue,
   modelKey,
   mulberry32,
   randomAssumptions,
+  randomCardinalityFormula,
   randomFormula,
   referenceModels,
 } from './helpers';
@@ -136,32 +145,27 @@ function createSolvers(useReduction: boolean): {
     readonly reductions: ReductionCounts;
 
     constructor(expr: BooleanExpr, options: SolveOptions | undefined, enablePle: boolean) {
-      if (options?.stats !== undefined) {
-        Object.assign(options.stats, {
-          decisions: 0,
-          propagations: 0,
-          conflicts: 0,
-          restarts: 0,
-          learnedClauses: 0,
-          learnedClausesCurrent: 0,
-          learnedLiterals: 0,
-          minimizedLiterals: 0,
-        });
-      }
+      const stats =
+        options?.stats !== undefined
+          ? Object.assign(options.stats, createSolverStats())
+          : undefined;
       super(compile(expr), {
         assumptions: options?.assumptions,
         variablePriority: options?.variablePriority,
-        stats: options?.stats,
+        stats,
         enablePle,
         learnedClauseReductionThreshold: 1,
       });
       this.reductions = enablePle ? counts.reductions.singleShot : counts.reductions.enumeration;
     }
 
-    override solve(): boolean {
+    // Intercepts the tri-state core driver: solve()'s boolean wrapper and
+    // enumerateSlices both dispatch through search(), covering both harness
+    // paths. These harnesses run without budgets, so 'unknown' never occurs.
+    override search(): SearchVerdict {
       this.solveCalls += 1;
       const totalBefore = this.stats.learnedClauses;
-      const sat = super.solve();
+      const verdict = super.search();
       this.checkInvariants();
       assert.ok(this.stats.learnedClauses >= totalBefore, 'total across solve calls');
       assert.ok(this.stats.learnedClauses >= this.lastLearnedTotal, 'total after solving');
@@ -170,7 +174,7 @@ function createSolvers(useReduction: boolean): {
         this.clauses.filter((clause) => clause.learned).length,
         'live count after every solve on this instance',
       );
-      return sat;
+      return verdict;
     }
 
     override reduceLearnedClauses(): void {
@@ -269,12 +273,17 @@ function createSolvers(useReduction: boolean): {
   return {
     solve: (expr, options) => {
       const solver = new ObservedSolver(expr, options, true);
-      return solver.solve() ? solver.model() : null;
+      if (solver.solve()) {
+        return { status: 'sat', model: solver.model() };
+      }
+      const core = solver.unsatCore();
+      assert.ok(core !== null, 'an UNSAT verdict always carries its extracted core');
+      return { status: 'unsat', core };
     },
     enumerate: (expr, options) => {
       const solver = new ObservedSolver(expr, options, false);
       const originals = [...solver.clauses];
-      const models = solver.enumerateModels();
+      const models = expectCompleteModels(solver.enumerateModels());
       assert.strictEqual(
         solver.solveCalls,
         models.length + 1,
@@ -285,7 +294,7 @@ function createSolvers(useReduction: boolean): {
       for (const clause of originals) {
         assert.ok(permanent.has(clause), 'original clauses remain permanent through enumeration');
       }
-      return models;
+      return { status: 'complete', models };
     },
     counts,
   };
@@ -338,35 +347,48 @@ function assertEnumeratedModels(
 
 // Repeat the SAME input objects, not new random draws. The expected verdict
 // comes from the independent reference before any solver call; agreeing with
-// an earlier run alone would let a consistently wrong answer pass.
+// an earlier run alone would let a consistently wrong answer pass. UNSAT
+// answers are checked against the failed-assumption core oracle
+// (Design § UNSAT Cores).
 function assertStableSolution(
   solve: typeof getSolution,
   label: string,
   expr: BooleanExpr,
+  reference: readonly VariableAssignments[],
   expectedSat: boolean,
   assumptions: VariableAssignments = {},
-): VariableAssignments | null {
+): SolveResult {
   let firstVerdict: boolean | undefined;
-  let model: VariableAssignments | null = null;
+  let result: SolveResult | undefined;
   for (let run = 0; run < REPEATED_SOLVES; run += 1) {
-    model = solve(expr, { assumptions });
-    const sat = model !== null;
+    result = solve(expr, { assumptions });
+    const sat = result.status === 'sat';
     assert.strictEqual(sat, expectedSat, `${label} solve ${run} reference verdict`);
     if (run === 0) {
       firstVerdict = sat;
     } else {
       assert.strictEqual(sat, firstVerdict, `${label} solve ${run} repeated verdict`);
     }
-    if (model !== null) {
-      assertModelShape(model, expr);
-      assert.strictEqual(expressionValue(expr, model), Value.TRUE, `${label} solve ${run} model`);
+    if (result.status === 'sat') {
+      assertModelShape(result.model, expr);
+      assert.strictEqual(
+        expressionValue(expr, result.model),
+        Value.TRUE,
+        `${label} solve ${run} model`,
+      );
       assert.ok(
-        modelExtends(model, assumptions),
+        modelExtends(result.model, assumptions),
         `${label} solve ${run} model must extend the assumptions`,
       );
+    } else {
+      assert.strictEqual(result.status, 'unsat', 'unknown is not producible yet');
+      assertSoundCore(`${label} solve ${run}`, reference, assumptions, result.core);
     }
   }
-  return model;
+  if (result === undefined) {
+    throw new Error('assertStableSolution requires at least one run');
+  }
+  return result;
 }
 
 // The no-assumption cross-check battery for one formula: verdict triangle,
@@ -380,8 +402,10 @@ const assertEnumerationAgainstReference: (
   counts?: HarnessCounts,
 ) => void = (solve, enumerate, label, expr, counts) => {
   const reference = referenceModels(expr);
-  assertStableSolution(solve, label, expr, reference.length > 0);
-  const actual = enumerate(expr);
+  assertStableSolution(solve, label, expr, reference, reference.length > 0);
+  const completed = enumerate(expr);
+  assert.strictEqual(completed.status, 'complete', `${label} enumeration completes`);
+  const actual = completed.models;
 
   // Verdict triangle: getSolution sat ⟺ getAllSolutions nonempty ⟺ the
   // reference enumerates at least one model.
@@ -407,10 +431,11 @@ const assertAssumptionsAgainstReference: (
   counts?: HarnessCounts,
 ) => void = (solve, enumerate, label, expr, partial, reference, counts) => {
   const extendingReference = reference.filter((model) => modelExtends(model, partial));
-  assertStableSolution(solve, label, expr, extendingReference.length > 0, partial);
+  assertStableSolution(solve, label, expr, reference, extendingReference.length > 0, partial);
 
   const enumerated = enumerate(expr, { assumptions: partial });
-  assertEnumeratedModels(label, expr, enumerated, extendingReference, partial);
+  assert.strictEqual(enumerated.status, 'complete', `${label} enumeration completes`);
+  assertEnumeratedModels(label, expr, enumerated.models, extendingReference, partial);
   if (counts !== undefined) {
     counts.assumptions += 1;
   }
@@ -533,7 +558,7 @@ for (const useReduction of [false, true]) {
         for (const [label, expr] of battery) {
           const expected = expectedByLabel.get(label);
           assert.ok(expected !== undefined, `missing expectation for ${label}`);
-          assertEnumeratedModels(label, expr, enumerate(expr), expected);
+          assertEnumeratedModels(label, expr, enumerate(expr).models, expected);
         }
       });
 
@@ -551,24 +576,47 @@ for (const useReduction of [false, true]) {
             const expr = required === Value.TRUE ? and(name) : not(name);
             const expected = { [name]: required };
             for (const assumptions of [{}, expected, { [name]: Value.UNSET }]) {
-              const model = assertStableSolution(solve, name, expr, true, assumptions);
-              assert.deepStrictEqual(model, expected);
-              assertModelShape(model, expr);
+              const result = assertStableSolution(
+                solve,
+                name,
+                expr,
+                referenceModels(expr),
+                true,
+                assumptions,
+              );
+              assert.deepStrictEqual(result, { status: 'sat', model: expected });
+              assertModelShape(expectSatModel(result), expr);
               assertEnumeratedModels(
                 name,
                 expr,
-                enumerate(expr, { assumptions }),
+                enumerate(expr, { assumptions }).models,
                 [expected],
                 assumptions,
               );
             }
             const assumptions = { [name]: required === Value.TRUE ? Value.FALSE : Value.TRUE };
-            assert.strictEqual(assertStableSolution(solve, name, expr, false, assumptions), null);
-            assertEnumeratedModels(name, expr, enumerate(expr, { assumptions }), [], assumptions);
+            // The seeded-rejection witness: the core is exactly the failed
+            // assumption, in both the public and the reduction-variant paths.
+            assert.deepStrictEqual(
+              assertStableSolution(solve, name, expr, referenceModels(expr), false, assumptions),
+              { status: 'unsat', core: assumptions },
+            );
+            assertEnumeratedModels(
+              name,
+              expr,
+              enumerate(expr, { assumptions }).models,
+              [],
+              assumptions,
+            );
           }
           const contradiction = and(name, not(name));
-          assert.strictEqual(assertStableSolution(solve, name, contradiction, false), null);
-          assertEnumeratedModels(name, contradiction, enumerate(contradiction), []);
+          // No assumptions supplied: the empty core is the
+          // assumption-independent proof.
+          assert.deepStrictEqual(
+            assertStableSolution(solve, name, contradiction, referenceModels(contradiction), false),
+            { status: 'unsat', core: {} },
+          );
+          assertEnumeratedModels(name, contradiction, enumerate(contradiction).models, []);
         });
       }
     });
@@ -750,8 +798,8 @@ for (const useReduction of [false, true]) {
             assert.deepStrictEqual(formulaA, formulaB);
 
             const reference = referenceModels(formulaA);
-            const modelsA = enumerate(formulaA);
-            const modelsB = enumerate(formulaB);
+            const modelsA = enumerate(formulaA).models;
+            const modelsB = enumerate(formulaB).models;
             assertEnumeratedModels(`${label} seed ${seed} A`, formulaA, modelsA, reference);
             assertEnumeratedModels(`${label} seed ${seed} B`, formulaB, modelsB, reference);
             assertModelListsEqual(modelsA, modelsB);
@@ -794,6 +842,217 @@ for (const useReduction of [false, true]) {
                 : 'public reductions not instrumented'
             }`,
           );
+        });
+      });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The versioned cardinality generator stream battery (Design § Testing
+// Strategy): its own seeds and pinned sample counts through the SAME
+// cross-validation harness. The legacy stream above is never re-rolled.
+// ---------------------------------------------------------------------------
+
+assert.strictEqual(
+  CARDINALITY_STREAM_VERSION,
+  1,
+  'the cardinality generator changed: bump the version and re-pin this battery',
+);
+const CARDINALITY_SEED_COUNT = 256;
+// Assumption draws use a disjoint seed band from the legacy battery.
+const CARDINALITY_ASSUMPTION_SEED_BASE = 500_000;
+// Pinned per-pool sample counts for stream v1 (measured, then frozen): 221
+// satisfiable and 202 non-tautological formulas per pool drive the draws.
+const CARDINALITY_CONSISTENT_DRAWS: Record<string, number> = {
+  'original a-h': 442,
+  'arbitrary string names': 442,
+};
+const CARDINALITY_CONTRADICTORY_DRAWS: Record<string, number> = {
+  'original a-h': 404,
+  'arbitrary string names': 404,
+};
+const CARDINALITY_DISTINCT_FLOOR = 250;
+
+{
+  const variant = 'cardinality stream v1 (getSolution/getAllSolutions)';
+  describe(`${variant} cross-validation against the reference enumerator`, () => {
+    for (const { label, variables } of VARIABLE_POOLS) {
+      const options = { ...FORMULA_OPTIONS, variables };
+      const { solve, enumerate, counts } = createSolvers(false);
+      describe(`seeded cardinality formulas (${label}; ${CARDINALITY_SEED_COUNT})`, () => {
+        it('matches the reference triangle, exact counts, and repeated verdicts on every formula', (context) => {
+          const kindsSeen = new Set<string>();
+          const formulasSeen = new Set<string>();
+          const variablesSeen = new Set<string>();
+          for (let seed = 0; seed < CARDINALITY_SEED_COUNT; seed += 1) {
+            const rng = mulberry32(seed);
+            const { expr, kinds } = randomCardinalityFormula(rng, options);
+            formulasSeen.add(JSON.stringify(expr));
+            for (const name of getVariables(expr)) {
+              variablesSeen.add(name);
+            }
+            for (const kind of kinds) {
+              kindsSeen.add(kind);
+            }
+            assertEnumerationAgainstReference(
+              solve,
+              enumerate,
+              `${label} cardinality seed ${seed}`,
+              expr,
+              counts,
+            );
+          }
+          assert.strictEqual(
+            counts.formulas,
+            CARDINALITY_SEED_COUNT,
+            `${label} processed formula count`,
+          );
+          // the fixed-seed stream exercises all five legacy constructors and
+          // all four cardinality constructors
+          assert.deepStrictEqual([...kindsSeen].sort(), [
+            'and',
+            'atLeast',
+            'atMost',
+            'atMostOne',
+            'exactly',
+            'implies',
+            'not',
+            'or',
+            'xor',
+          ]);
+          assert.deepStrictEqual([...variablesSeen].sort(), [...variables].sort());
+          assert.ok(
+            formulasSeen.size >= CARDINALITY_DISTINCT_FLOOR,
+            `at least ${CARDINALITY_DISTINCT_FLOOR} distinct formula ASTs are cross-checked (saw ${formulasSeen.size})`,
+          );
+          context.diagnostic(
+            `${counts.formulas} formulas; ${formulasSeen.size} distinct ASTs; ${kindsSeen.size} constructors; ${variablesSeen.size} variable names`,
+          );
+        });
+
+        it('draws random assumption subsets per formula - consistent ones cross-checked', (context) => {
+          const before = counts.assumptions;
+          const assumedVariables = new Set<string>();
+          for (let seed = 0; seed < CARDINALITY_SEED_COUNT; seed += 1) {
+            const rng = mulberry32(seed);
+            const { expr } = randomCardinalityFormula(rng, options);
+            const reference = referenceModels(expr);
+            if (reference.length === 0) {
+              continue; // unsatisfiable formulas admit no consistent partial
+            }
+            for (let draw = 0; draw < ASSUMPTIONS_PER_FORMULA / 2; draw += 1) {
+              const partial = randomAssumptions(
+                mulberry32(
+                  CARDINALITY_ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw,
+                ),
+                expr,
+                {
+                  kind: 'consistent',
+                  maxAssumptions: MAX_CONSISTENT_ASSUMPTIONS,
+                },
+              );
+              assert.ok(
+                reference.some((model) => modelExtends(model, partial)),
+                'consistent subset',
+              );
+              for (const name of Object.keys(partial)) {
+                assumedVariables.add(name);
+              }
+              assertAssumptionsAgainstReference(
+                solve,
+                enumerate,
+                `${label} cardinality seed ${seed} draw ${draw}`,
+                expr,
+                partial,
+                reference,
+                counts,
+              );
+            }
+          }
+          assert.strictEqual(
+            counts.assumptions - before,
+            CARDINALITY_CONSISTENT_DRAWS[label],
+            'all consistent assumption draws',
+          );
+          assert.deepStrictEqual([...assumedVariables].sort(), [...variables].sort());
+          context.diagnostic(`${counts.assumptions - before} consistent assumption samples`);
+        });
+
+        it('draws random assumption subsets per formula - contradictory ones cross-checked', (context) => {
+          const before = counts.assumptions;
+          const assumedVariables = new Set<string>();
+          for (let seed = 0; seed < CARDINALITY_SEED_COUNT; seed += 1) {
+            const rng = mulberry32(seed);
+            const { expr } = randomCardinalityFormula(rng, options);
+            const reference = referenceModels(expr);
+            const variableCount = getVariables(expr).size;
+            if (reference.length === 2 ** variableCount) {
+              continue; // tautologies admit no contradictory partial
+            }
+            for (
+              let draw = ASSUMPTIONS_PER_FORMULA / 2;
+              draw < ASSUMPTIONS_PER_FORMULA;
+              draw += 1
+            ) {
+              const partial = randomAssumptions(
+                mulberry32(
+                  CARDINALITY_ASSUMPTION_SEED_BASE + seed * ASSUMPTIONS_PER_FORMULA + draw,
+                ),
+                expr,
+                {
+                  kind: 'contradictory',
+                },
+              );
+              assert.ok(
+                reference.every((model) => !modelExtends(model, partial)),
+                'contradictory subset',
+              );
+              for (const name of Object.keys(partial)) {
+                assumedVariables.add(name);
+              }
+              assertAssumptionsAgainstReference(
+                solve,
+                enumerate,
+                `${label} cardinality seed ${seed} draw ${draw}`,
+                expr,
+                partial,
+                reference,
+                counts,
+              );
+            }
+          }
+          assert.strictEqual(
+            counts.assumptions - before,
+            CARDINALITY_CONTRADICTORY_DRAWS[label],
+            'all contradictory assumption draws',
+          );
+          assert.deepStrictEqual([...assumedVariables].sort(), [...variables].sort());
+          context.diagnostic(`${counts.assumptions - before} contradictory assumption samples`);
+        });
+
+        it('is deterministic under a fixed seed (same formula, model set, and subsets)', () => {
+          for (let seed = 0; seed < 8; seed += 1) {
+            const formulaA = randomCardinalityFormula(mulberry32(seed), options).expr;
+            const formulaB = randomCardinalityFormula(mulberry32(seed), options).expr;
+            assert.deepStrictEqual(formulaA, formulaB);
+            const reference = referenceModels(formulaA);
+            const modelsA = enumerate(formulaA).models;
+            const modelsB = enumerate(formulaB).models;
+            assertEnumeratedModels(
+              `${label} cardinality seed ${seed} A`,
+              formulaA,
+              modelsA,
+              reference,
+            );
+            assertEnumeratedModels(
+              `${label} cardinality seed ${seed} B`,
+              formulaB,
+              modelsB,
+              reference,
+            );
+            assertModelListsEqual(modelsA, modelsB);
+          }
         });
       });
     }

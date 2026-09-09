@@ -1,17 +1,20 @@
 // Candidate-side scenario runner for the v3 harness. It mirrors the frozen
 // v2 recorder's adapter (test/v3-baseline-overlay/adapter.ts, never imported
 // here) against the CURRENT candidate sources: PLE only for single-shot, one
-// persistent solveAssuming core for incremental calls, and the
-// permanent-blocker loop for enumeration, with one positive lifetime conflict
-// cap spanning construction and the whole scenario. Until public conflict
-// budgets land (Phase 3), the candidate adapter uses the same internal
-// maxConflicts mechanism as the frozen v2 adapter; this is not a claim that
-// v2 had public budgets. Partial calls/models survive cap exhaustion, and the
-// interrupted core is discarded immediately.
+// persistent solveAssuming core for incremental calls, and the production
+// enumeration loop, with one positive conflict BUDGET spanning construction
+// and the whole scenario. The candidate uses the non-throwing conflictBudget
+// mechanism: incremental calls receive the REMAINING scenario cap and the
+// scenario stops before another call once it reaches zero — never silently
+// multiplying the 32-call cap — while single-shot and enumeration spans pass
+// it once. An exhausted call/search returns 'unknown' (the final conflict's
+// atomic transaction IS counted and learned, unlike v2's pre-analysis throw;
+// disclosed, and historical counters are never relabeled). Partial
+// calls/models survive exhaustion, and the interrupted core is discarded
+// immediately.
 
 import assert from 'node:assert/strict';
 import { compile } from '../src/compile.js';
-import { Value } from '../src/expr.js';
 import { Solver } from '../src/solver.js';
 import type { SolverStats } from '../src/solver.js';
 import { compiledSnapshot, digest, inputIdentity, modelEvidence } from './bench-evidence.js';
@@ -53,7 +56,9 @@ export function runScenario(scenario: Scenario, cap: number) {
   const solver = new Solver(cnf, {
     enablePle: scenario.mode === 'single',
     assumptions: scenario.mode === 'incremental' ? undefined : scenario.assumptions,
-    maxConflicts: cap,
+    // Single-shot and enumeration spans pass the scenario-wide cap once;
+    // incremental calls pass the REMAINING cap per call below.
+    conflictBudget: scenario.mode === 'incremental' ? undefined : cap,
     stats,
   });
   const construction = { ...stats };
@@ -61,46 +66,55 @@ export function runScenario(scenario: Scenario, cap: number) {
   const modelDigests: string[] = [];
   let status: 'sat' | 'unsat' | 'complete' | 'exhausted' = 'exhausted';
   let activeCall: CallEvidence | null = null;
-  try {
-    if (scenario.mode === 'incremental') {
-      for (const [index, assumptions] of scenario.calls.entries()) {
-        activeCall = { index, status: 'exhausted', modelDigest: null, stats: zeroStats() };
-        calls.push(activeCall);
-        const model = solver.solveAssuming(assumptions, activeCall.stats);
-        activeCall.status = model === null ? 'unsat' : 'sat';
-        activeCall.modelDigest =
-          model === null ? null : modelEvidence(scenario.expr, assumptions, model);
+  if (scenario.mode === 'incremental') {
+    let spent = 0;
+    for (const [index, assumptions] of scenario.calls.entries()) {
+      const remaining = cap - spent;
+      if (remaining <= 0) {
+        // Never invoke the budget-zero startup exception as a loophole: stop
+        // before another call once the scenario-wide cap is spent.
+        break;
       }
-      status = 'complete';
-    } else if (scenario.mode === 'enumeration') {
-      while (solver.solve()) {
-        modelDigests.push(modelEvidence(scenario.expr, scenario.assumptions, solver.model()));
-        const blocker: number[] = [];
-        for (let variable = 0; variable < cnf.numNamedVars; variable += 1) {
-          blocker.push(variable * 2 + (solver.assigns[variable] === Value.TRUE ? 1 : 0));
-        }
-        solver.addPermanentClause(blocker);
+      activeCall = { index, status: 'exhausted', modelDigest: null, stats: zeroStats() };
+      calls.push(activeCall);
+      const result = solver.solveAssuming(assumptions, activeCall.stats, remaining);
+      spent += activeCall.stats.conflicts;
+      if (result.status === 'unknown') {
+        // Budget exhaustion mid-call: keep the partial-call evidence and
+        // stop the scenario; the interrupted core is discarded.
+        break;
       }
+      activeCall.status = result.status === 'unsat' ? 'unsat' : 'sat';
+      activeCall.modelDigest =
+        result.status === 'sat' ? modelEvidence(scenario.expr, assumptions, result.model) : null;
+    }
+    if (calls.length === scenario.calls.length && activeCall?.status !== 'exhausted') {
       status = 'complete';
+    }
+  } else if (scenario.mode === 'enumeration') {
+    const outcome = solver.enumerateModels();
+    for (const model of outcome.models) {
+      modelDigests.push(modelEvidence(scenario.expr, scenario.assumptions, model));
+    }
+    status = outcome.status === 'complete' ? 'complete' : 'exhausted';
+  } else {
+    const verdict = solver.search();
+    if (verdict === 'unknown') {
+      status = 'exhausted';
     } else {
-      status = solver.solve() ? 'sat' : 'unsat';
+      status = verdict === 'sat' ? 'sat' : 'unsat';
       if (status === 'sat') {
         modelDigests.push(modelEvidence(scenario.expr, scenario.assumptions, solver.model()));
       }
     }
-  } catch (error) {
-    // Only this exact exception is evidence of cap exhaustion. The
-    // cap-reaching conflict is counted BEFORE analysis; never reuse this core.
-    if (
-      !(error instanceof Error) ||
-      error.message !== `maximum conflict budget exhausted (${cap})`
-    ) {
-      throw error;
-    }
-    assert.equal(stats.conflicts, cap);
-    status = 'exhausted';
   }
-  if (status !== 'exhausted') assert.ok(stats.conflicts < cap);
+  if (status === 'exhausted') {
+    // The final conflict's atomic transaction is counted: exhaustion lands
+    // exactly at the cap, never beyond it.
+    assert.equal(stats.conflicts, cap);
+  } else {
+    assert.ok(stats.conflicts < cap);
+  }
   if (scenario.mode === 'incremental') {
     for (const key of workCounters) {
       assert.equal(

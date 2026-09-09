@@ -27,6 +27,8 @@ import type { Variable, VariablePriority } from '../src';
 import {
   assertModelListsEqual,
   assertModelShape,
+  expectCompleteModels,
+  expectSatModel,
   expressionValue,
   hypergraphFormula,
   hypergraphPrereqs,
@@ -99,7 +101,7 @@ const visitOrder: VariablePriority = (unassigned, assignments) => {
 describe('getSolution', () => {
   describe('solvable', () => {
     it('supports and operator (exact model)', () => {
-      const model = getSolution(and('a', 'b'));
+      const model = expectSatModel(getSolution(and('a', 'b')));
       assert.deepStrictEqual(model, { a: Value.TRUE, b: Value.TRUE });
       assertModelShape(model, and('a', 'b'));
       assert.strictEqual(expressionValue(and('a', 'b'), model), Value.TRUE);
@@ -107,7 +109,7 @@ describe('getSolution', () => {
 
     it('supports or operator (PLE forces the oneOf case)', () => {
       const formula = or('a', 'b');
-      const model = getSolution(formula);
+      const model = expectSatModel(getSolution(formula));
       // The plain clause (a ∨ b) makes both literals pure, so scoped PLE
       // forces {a: TRUE, b: TRUE} — no search, no choices.
       assert.deepStrictEqual(model, { a: Value.TRUE, b: Value.TRUE });
@@ -116,7 +118,7 @@ describe('getSolution', () => {
     });
 
     it('supports not operator (exact model)', () => {
-      const model = getSolution(not('b'));
+      const model = expectSatModel(getSolution(not('b')));
       assert.deepStrictEqual(model, { b: Value.FALSE });
       assertModelShape(model, not('b'));
       assert.strictEqual(expressionValue(not('b'), model), Value.TRUE);
@@ -124,7 +126,7 @@ describe('getSolution', () => {
 
     it('supports implies operator (PLE trap: {a: FALSE, b: TRUE})', () => {
       const formula = implies('a', 'b');
-      const model = getSolution(formula);
+      const model = expectSatModel(getSolution(formula));
       // Trap (Design § Testing): the plain clause (¬a ∨ b) leaves both
       // variables pure, so scoped PLE yields {a: FALSE, b: TRUE} — NOT v1's
       // FALSE-first {a: FALSE, b: FALSE}. Both are valid models of implies.
@@ -139,7 +141,7 @@ describe('getSolution', () => {
 
     it('supports xor operator (exact model)', () => {
       const formula = xor('a', 'b');
-      const model = getSolution(formula);
+      const model = expectSatModel(getSolution(formula));
       // Symmetric gate encodings make PLE inert; FALSE-first/index-order
       // branching reproduces v1's {a: false, b: true}.
       assert.deepStrictEqual(model, { a: Value.FALSE, b: Value.TRUE });
@@ -149,7 +151,7 @@ describe('getSolution', () => {
 
     it('supports complex clauses (exact unique model)', () => {
       const formula = and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')));
-      const model = getSolution(formula);
+      const model = expectSatModel(getSolution(formula));
       assert.deepStrictEqual(model, {
         a: Value.TRUE,
         b: Value.FALSE,
@@ -162,8 +164,8 @@ describe('getSolution', () => {
     });
 
     it('implements the v1-compatible empty-formula semantics', () => {
-      assert.deepStrictEqual(getSolution(and()), {});
-      assert.strictEqual(getSolution(or()), null);
+      assert.deepStrictEqual(getSolution(and()), { status: 'sat', model: {} });
+      assert.deepStrictEqual(getSolution(or()), { status: 'unsat', core: {} });
     });
 
     describe('hypergraph traversal problems', () => {
@@ -194,9 +196,10 @@ describe('getSolution', () => {
           learnedLiterals: 999,
           minimizedLiterals: 999,
         };
-        const model = getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE }, stats });
+        const model = expectSatModel(
+          getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE }, stats }),
+        );
 
-        assert.ok(model !== null);
         // With { h: TRUE } asserted at level 0, unit propagation forces
         // {h, b, g, a, c} and the pinned global-sweep PLE assigns the rest of
         // the chain; only the two zero-occurrence don't-cares remain for the
@@ -219,19 +222,21 @@ describe('getSolution', () => {
       });
 
       it('honors a domain variablePriority with equal forced subset', () => {
-        const defaultModel = getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE } });
+        const defaultModel = expectSatModel(
+          getSolution(hypergraphFormula(), { assumptions: { h: Value.TRUE } }),
+        );
         const candidates: Variable[][] = [];
-        const customModel = getSolution(hypergraphFormula(), {
-          assumptions: { h: Value.TRUE },
-          variablePriority: (unassigned, assignments) => {
-            candidates.push([...unassigned]);
-            return visitOrder(unassigned, assignments);
-          },
-        });
+        const customModel = expectSatModel(
+          getSolution(hypergraphFormula(), {
+            assumptions: { h: Value.TRUE },
+            variablePriority: (unassigned, assignments) => {
+              candidates.push([...unassigned]);
+              return visitOrder(unassigned, assignments);
+            },
+          }),
+        );
 
         assert.deepEqual(candidates, [['e', 'n'], ['n']], 'two ordinary completion decisions');
-        assert.ok(defaultModel !== null);
-        assert.ok(customModel !== null);
         assertModelShape(customModel, hypergraphFormula());
         assert.strictEqual(expressionValue(hypergraphFormula(), customModel), Value.TRUE);
         for (const required of ['a', 'b', 'c', 'g', 'h']) {
@@ -259,22 +264,25 @@ describe('getSolution', () => {
 
     it('ignores UNSET assumption entries', () => {
       assert.deepStrictEqual(getSolution(not('b'), { assumptions: { b: Value.UNSET } }), {
-        b: Value.FALSE,
+        status: 'sat',
+        model: { b: Value.FALSE },
       });
     });
 
     it('propagates assumptions immediately at level zero', () => {
       // (¬a ∨ b) with a assumed TRUE forces b=TRUE before any decision.
       assert.deepStrictEqual(getSolution(implies('a', 'b'), { assumptions: { a: Value.TRUE } }), {
-        a: Value.TRUE,
-        b: Value.TRUE,
+        status: 'sat',
+        model: { a: Value.TRUE, b: Value.TRUE },
       });
     });
 
-    it('returns null fast when assumptions contradict the formula', () => {
-      assert.strictEqual(
+    it('returns the failed-assumption core fast when assumptions contradict the formula', () => {
+      // The tainted-implication witness, single-shot: the implied x is NOT an
+      // assumption; the walk resolves through it to both supplied leaves.
+      assert.deepStrictEqual(
         getSolution(implies('a', 'b'), { assumptions: { a: Value.TRUE, b: Value.FALSE } }),
-        null,
+        { status: 'unsat', core: { a: Value.TRUE, b: Value.FALSE } },
       );
     });
   });
@@ -291,7 +299,7 @@ describe('getSolution', () => {
         learnedLiterals: 999,
         minimizedLiterals: 999,
       };
-      const model = getSolution(and('a', 'b'), { stats });
+      const model = expectSatModel(getSolution(and('a', 'b'), { stats }));
       assert.deepStrictEqual(model, { a: Value.TRUE, b: Value.TRUE });
       // Zeroing is the callee's responsibility; the same reference is then
       // populated by the solver (both unit clause enqueues count as
@@ -318,9 +326,8 @@ describe('getSolution', () => {
       // unavoidable, so the hook fires exactly once — at the single decision
       // point. Keep this PLE-inert cadence witness in addition to the two
       // ordinary don't-care decisions on the hypergraph.
-      const model = getSolution(xor('a', 'b'), { variablePriority: hook });
+      const model = expectSatModel(getSolution(xor('a', 'b'), { variablePriority: hook }));
       assert.strictEqual(hookCalls, 1);
-      assert.ok(model !== null);
       assertModelShape(model, xor('a', 'b'));
       assert.strictEqual(expressionValue(xor('a', 'b'), model), Value.TRUE);
 
@@ -330,8 +337,8 @@ describe('getSolution', () => {
         return null;
       };
       assert.deepStrictEqual(getSolution(and('a', 'b'), { variablePriority: silentHook }), {
-        a: Value.TRUE,
-        b: Value.TRUE,
+        status: 'sat',
+        model: { a: Value.TRUE, b: Value.TRUE },
       });
       // The all-unit formula needs no decisions, so the hook is never called.
       assert.strictEqual(hookCalls, totalAfterXor);
@@ -339,8 +346,8 @@ describe('getSolution', () => {
   });
 
   describe('unsolvable', () => {
-    it('returns null for the unsolvable worked example', () => {
-      assert.strictEqual(
+    it('returns an assumption-independent empty core for the unsolvable worked example', () => {
+      assert.deepStrictEqual(
         getSolution(
           and(
             not('b'),
@@ -351,7 +358,7 @@ describe('getSolution', () => {
             xor('b', 'e'),
           ),
         ),
-        null,
+        { status: 'unsat', core: {} },
       );
     });
   });
@@ -361,7 +368,7 @@ describe('getAllSolutions', () => {
   describe('solvable', () => {
     it('supports and operator (exact model)', () => {
       const formula = and('a', 'b');
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       assertModelListsEqual(models, [{ a: Value.TRUE, b: Value.TRUE }]);
       for (const model of models) {
         assertModelShape(model, formula);
@@ -371,7 +378,7 @@ describe('getAllSolutions', () => {
 
     it('supports or operator — enumerates all three models (PLE-unsoundness regression)', () => {
       const formula = or('a', 'b');
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       // PLE is disabled in enumeration mode (Design § Solver Core): with PLE
       // on, iteration 1 pins {a: TRUE, b: TRUE} (both literals pure), then the
       // blocking clause (¬a ∨ ¬b) conflicts with the stale pins and the
@@ -396,7 +403,7 @@ describe('getAllSolutions', () => {
       // {v: FALSE, a: TRUE} is silently dropped (2 models instead of 3).
       // Enumeration must therefore return all three.
       const formula = or('v', 'a');
-      assertModelListsEqual(getAllSolutions(formula), [
+      assertModelListsEqual(expectCompleteModels(getAllSolutions(formula)), [
         { v: Value.FALSE, a: Value.TRUE },
         { v: Value.TRUE, a: Value.FALSE },
         { v: Value.TRUE, a: Value.TRUE },
@@ -405,7 +412,7 @@ describe('getAllSolutions', () => {
 
     it('supports not operator (exact model)', () => {
       const formula = not('b');
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       assertModelListsEqual(models, [{ b: Value.FALSE }]);
       for (const model of models) {
         assertModelShape(model, formula);
@@ -415,7 +422,7 @@ describe('getAllSolutions', () => {
 
     it('supports implies operator (all three models)', () => {
       const formula = implies('a', 'b');
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       assertModelListsEqual(models, [
         { a: Value.FALSE, b: Value.FALSE },
         { a: Value.FALSE, b: Value.TRUE },
@@ -430,7 +437,7 @@ describe('getAllSolutions', () => {
 
     it('supports xor operator (both models)', () => {
       const formula = xor('a', 'b');
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       assertModelListsEqual(models, [
         { a: Value.FALSE, b: Value.TRUE },
         { a: Value.TRUE, b: Value.FALSE },
@@ -444,7 +451,7 @@ describe('getAllSolutions', () => {
 
     it('supports complex clauses (exact unique model)', () => {
       const formula = and(not('b'), or('a', 'b'), xor('b', 'c'), implies('c', and('d', 'e')));
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
       assertModelListsEqual(models, [
         {
           a: Value.TRUE,
@@ -474,7 +481,7 @@ describe('getAllSolutions', () => {
       // b=FALSE forces c=TRUE, hence d=TRUE, contradicting not(d).
       // Independently check all 32 assignments over a,b,c,d,e as well.
       assert.deepStrictEqual(referenceModels(formula), []);
-      assert.deepStrictEqual(getAllSolutions(formula), []);
+      assert.deepStrictEqual(getAllSolutions(formula), { status: 'complete', models: [] });
     });
   });
 
@@ -483,16 +490,16 @@ describe('getAllSolutions', () => {
       // and(): the empty conjunction has one model, {}; the blocking clause
       // over zero named variables is the empty clause — terminal UNSAT for
       // enumeration after the first iteration.
-      assert.deepStrictEqual(getAllSolutions(and()), [{}]);
+      assert.deepStrictEqual(getAllSolutions(and()), { status: 'complete', models: [{}] });
       // or(): the empty disjunction compiles to the empty clause.
-      assert.deepStrictEqual(getAllSolutions(or()), []);
+      assert.deepStrictEqual(getAllSolutions(or()), { status: 'complete', models: [] });
     });
 
     it('returns [] immediately for a levelZeroUnsat formula', () => {
       // and(or(), 'a') constant-folds to the empty clause (or() annihilates
       // the conjunction; 'a' stays in the named universe), so levelZeroUnsat
       // short-circuits before any solve.
-      assert.deepStrictEqual(getAllSolutions(and(or(), 'a')), []);
+      assert.deepStrictEqual(getAllSolutions(and(or(), 'a')), { status: 'complete', models: [] });
     });
 
     it('enumerates a 40-variable chain without an array-length cap', () => {
@@ -505,7 +512,7 @@ describe('getAllSolutions', () => {
         prereqClauses.push(implies(`v${index}`, `v${index - 1}`));
       }
       const formula = and(...prereqClauses);
-      const models = getAllSolutions(formula);
+      const models = expectCompleteModels(getAllSolutions(formula));
 
       assert.strictEqual(models.length, 41);
       assert.strictEqual(models.length, new Set(models.map(modelKey)).size);
@@ -532,7 +539,9 @@ describe('getAllSolutions', () => {
     });
 
     it('ignores UNSET assumption entries', () => {
-      const models = getAllSolutions(or('a', 'b'), { assumptions: { a: Value.UNSET } });
+      const models = expectCompleteModels(
+        getAllSolutions(or('a', 'b'), { assumptions: { a: Value.UNSET } }),
+      );
       assertModelListsEqual(models, [
         { a: Value.FALSE, b: Value.TRUE },
         { a: Value.TRUE, b: Value.FALSE },
@@ -541,12 +550,18 @@ describe('getAllSolutions', () => {
     });
 
     it('filters enumeration to models extending the assumptions', () => {
-      const models = getAllSolutions(implies('a', 'b'), { assumptions: { b: Value.FALSE } });
+      const models = expectCompleteModels(
+        getAllSolutions(implies('a', 'b'), { assumptions: { b: Value.FALSE } }),
+      );
       assertModelListsEqual(models, [{ a: Value.FALSE, b: Value.FALSE }]);
     });
 
-    it('returns [] when the assumptions contradict the formula', () => {
-      assert.deepStrictEqual(getAllSolutions(and('a'), { assumptions: { a: Value.FALSE } }), []);
+    it('returns an empty model list when the assumptions contradict the formula', () => {
+      // EnumerateResult carries no core; UNSAT shows as the empty list.
+      assert.deepStrictEqual(getAllSolutions(and('a'), { assumptions: { a: Value.FALSE } }), {
+        status: 'complete',
+        models: [],
+      });
     });
   });
 
@@ -562,7 +577,7 @@ describe('getAllSolutions', () => {
         learnedLiterals: 999,
         minimizedLiterals: 999,
       };
-      const models = getAllSolutions(or('a', 'b'), { stats });
+      const models = expectCompleteModels(getAllSolutions(or('a', 'b'), { stats }));
       assert.strictEqual(models.length, 3);
       // One persistent solver: decide a=F -> b=T; after blocking, retry a=F
       // and conflict, learn/assert a=T, decide b=F. The next blocker is now
@@ -586,7 +601,9 @@ describe('getAllSolutions', () => {
         hookCalls += 1;
         return unassigned.length === 0 ? null : [unassigned[0], true];
       };
-      const models = getAllSolutions(or('a', 'b'), { variablePriority: hook });
+      const models = expectCompleteModels(
+        getAllSolutions(or('a', 'b'), { variablePriority: hook }),
+      );
 
       assert.ok(hookCalls > 0, 'the hook must be consulted for at least one decision');
       // The preferred polarity changes enumeration order but never the model
@@ -601,18 +618,30 @@ describe('getAllSolutions', () => {
 });
 
 describe('public surface', () => {
-  it('exports exactly the v2 symbol list', () => {
-    // Runtime values: the frozen formula API plus getSolution,
-    // getAllSolutions and createSolver. Types (BooleanExpr, Variable, VariableAssignments,
-    // SolverStats, SolveOptions, VariablePriority, SatSolver) are exported by name but
-    // erased at runtime; no v1 entry point (bruteForceAllSolutions,
-    // getInitialAssignments, selectNextVar) may survive.
+  it('exports exactly the v3 symbol list', () => {
+    // Runtime values: the frozen formula API plus the cardinality
+    // constructors (atMostOne/atMost/atLeast/exactly), getSolution,
+    // getAllSolutions, their async counterparts, createSolver and the
+    // createSolverStats factory. Types (BooleanExpr, Variable,
+    // VariableAssignments, SolverStats, SolverStatsInput, SolveResult,
+    // EnumerateResult, SolveOptions, AsyncSolveOptions, SatSolver,
+    // SatSolverCallOptions, SatSolverAsyncOptions, VariablePriority) are
+    // exported by name but erased at runtime; no v1 entry point
+    // (bruteForceAllSolutions, getInitialAssignments, selectNextVar) may
+    // survive.
     assert.deepStrictEqual(Object.keys(publicApi).sort(), [
       'Value',
       'and',
+      'atLeast',
+      'atMost',
+      'atMostOne',
       'createSolver',
+      'createSolverStats',
+      'exactly',
       'getAllSolutions',
+      'getAllSolutionsAsync',
       'getSolution',
+      'getSolutionAsync',
       'implies',
       'not',
       'or',

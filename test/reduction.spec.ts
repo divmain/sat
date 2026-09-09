@@ -890,7 +890,7 @@ describe('Solver decayed clause activity and dynamic LBD', () => {
       learnedLiterals: 0,
       minimizedLiterals: 0,
     };
-    assert.ok(solver.solveAssuming(undefined, stats1) !== null);
+    assert.strictEqual(solver.solveAssuming(undefined, stats1).status, 'sat');
     const roundsAfterCall1 = solver.reductions.length;
     assert.ok(roundsAfterCall1 > 0, 'call 1 engaged real reduction rounds');
     let expected = 1;
@@ -993,7 +993,7 @@ describe('Solver automatic reduction cadence', () => {
         restartPolicy: 'luby',
         restartBaseConflicts: 1,
         learnedClauseReductionThreshold: 3,
-        maxConflicts: 13,
+        conflictBudget: 13,
       });
       assert.strictEqual(solver.solve(), true);
       assert.strictEqual(expressionValue(expr, solver.model()), Value.TRUE);
@@ -1086,7 +1086,7 @@ describe('Solver automatic reduction cadence', () => {
     }
     const solver = new AuditedSolver(compile(gadgets(12)), {
       variablePriority: priority,
-      maxConflicts: 13,
+      conflictBudget: 13,
     });
     assert.strictEqual(solver.solve(), true);
     assert.strictEqual(solver.stats.learnedClauses, 12);
@@ -1100,7 +1100,7 @@ describe('Solver forced reduction search acceptance', () => {
     for (let run = 0; run < 2; run += 1) {
       const solver = new AuditedSolver(compile(cnfToExpr(phpCnf(6, 5))), {
         learnedClauseReductionThreshold: 8,
-        maxConflicts: 10_000,
+        conflictBudget: 10_000,
       });
       // Independent UNSAT proof: six pigeons cannot occupy five distinct holes.
       assert.strictEqual(solver.solve(), false);
@@ -1150,7 +1150,7 @@ describe('Solver forced reduction search acceptance', () => {
       learnedClauseReductionThreshold: 3,
       restartPolicy: 'luby',
       restartBaseConflicts: 1,
-      maxConflicts: 1_000,
+      conflictBudget: 1_000,
     });
     // Construct and evaluate the independent witness BEFORE asking the solver.
     const witness = Object.fromEntries([

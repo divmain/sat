@@ -546,7 +546,7 @@ describe('Solver learned clauses and non-chronological search', () => {
   });
 
   it('learns genuinely new clauses on PHP(6,5) with exact live counts and canonical reasons', () => {
-    const solver = new Solver(compile(cnfToExpr(phpCnf(6, 5))), { maxConflicts: 10_000 });
+    const solver = new Solver(compile(cnfToExpr(phpCnf(6, 5))), { conflictBudget: 10_000 });
     assert.strictEqual(solver.solve(), false);
     assert.ok(solver.stats.learnedClauses > 0, 'conflicts alone do not prove CDCL learning');
     const live = solver.clauses.filter((clause) => clause.learned);

@@ -5,10 +5,12 @@ import { isNeg, litValue, varOf } from '../src/compile.js';
 import type { Clause, CompiledCnf } from '../src/compile.js';
 import { Value } from '../src/expr.js';
 import type { BooleanExpr, VariableAssignments } from '../src/expr.js';
+import type { SolveResult } from '../src/index.js';
 import { Solver } from '../src/solver.js';
-import type { RestartPolicy, SolverStats } from '../src/solver.js';
+import type { RestartPolicy, SearchVerdict, SolverStats } from '../src/solver.js';
 import {
   assertModelShape,
+  assertSoundCore,
   assertWatchListsSurvive,
   expressionValue,
   snapshotWatches,
@@ -29,6 +31,13 @@ export interface Internals {
   readonly decisionHeap: readonly number[];
   readonly heapPosition: Int32Array;
   readonly unassignedNamed: number;
+  // Named-variable membership per global variable index (post-add() named
+  // indices need not be contiguous; auxiliaries are 0).
+  readonly named: Uint8Array;
+  // The growable solver-owned symbol table; indexToName has holes (undefined)
+  // at auxiliary slots.
+  readonly nameToIndex: Map<string, number>;
+  readonly indexToName: Array<string | undefined>;
   readonly varInc: number;
   readonly learnedSinceReduction: number;
   readonly conflictsSoFar: number;
@@ -38,7 +47,7 @@ export interface Internals {
   readonly restartBaseConflicts: number;
   readonly restartPolicy: RestartPolicy;
   readonly learnedClauseReductionThreshold: number;
-  readonly maxConflicts: number | undefined;
+  readonly conflictBudget: number | undefined;
   readonly propagationCursor: {
     event: number;
     falseLit: number;
@@ -69,35 +78,47 @@ export function extendsAssumptions(
 
 // Expected models come from the AST truth table, NEVER an earlier solver call.
 // Check actual models' assumptions directly as well as reference filtering.
+// UNSAT results additionally pass the failed-assumption core oracle: the core
+// is a subset of the call's assumptions and base ∧ core is brute-force UNSAT.
 export function assertResult(
   expr: BooleanExpr,
   assumptions: VariableAssignments,
   reference: readonly VariableAssignments[],
-  actual: VariableAssignments | null,
+  actual: SolveResult,
 ): void {
   const expectedSat = reference.some((model) => extendsAssumptions(model, assumptions));
-  assert.strictEqual(actual !== null, expectedSat, 'incremental reference verdict');
-  if (actual === null) return;
-  assertModelShape(actual, expr);
-  assert.strictEqual(
-    expressionValue(expr, actual),
-    Value.TRUE,
-    'reference-valid incremental model',
-  );
+  assert.strictEqual(actual.status === 'sat', expectedSat, 'incremental reference verdict');
+  if (actual.status !== 'sat') {
+    if (actual.status !== 'unsat') {
+      throw new Error(
+        'an unknown status means the budget guard exhausted; these harnesses must complete',
+      );
+    }
+    assertSoundCore('incremental', reference, assumptions, actual.core);
+    return;
+  }
+  const model = actual.model;
+  assertModelShape(model, expr);
+  assert.strictEqual(expressionValue(expr, model), Value.TRUE, 'reference-valid incremental model');
   for (const [name, value] of Object.entries(assumptions)) {
-    assert.ok(Object.hasOwn(actual, name), 'own assumption key');
+    assert.ok(Object.hasOwn(model, name), 'own assumption key');
     if (value !== Value.UNSET) {
-      assert.strictEqual(actual[name], value, `model must extend ${JSON.stringify(name)}`);
+      assert.strictEqual(model[name], value, `model must extend ${JSON.stringify(name)}`);
     }
   }
 }
 
+// Named-flag-aware heap audit (Design § Incremental Clause Addition): the
+// heap is indexed by global variable index, so the named flag — not an index
+// bound — decides which variables may hold heap entries or count as
+// unassigned named candidates. Auxiliaries always read heapPosition -1.
 export function assertHeap(solver: Solver): void {
-  const { decisionHeap: heap, heapPosition: positions, unassignedNamed } = internals(solver);
+  const { decisionHeap: heap, heapPosition: positions, unassignedNamed, named } = internals(solver);
   assert.strictEqual(new Set(heap).size, heap.length, 'unique heap entries');
   for (let index = 0; index < heap.length; index += 1) {
     const variable = heap[index];
-    assert.ok(variable >= 0 && variable < positions.length, 'named heap entries only');
+    assert.ok(variable >= 0 && variable < positions.length, 'heap entries within the array');
+    assert.strictEqual(named[variable], 1, 'named heap entries only');
     assert.strictEqual(positions[variable], index);
     if (index > 0) {
       const parent = heap[Math.floor((index - 1) / 2)];
@@ -110,6 +131,10 @@ export function assertHeap(solver: Solver): void {
   }
   let unset = 0;
   for (let variable = 0; variable < positions.length; variable += 1) {
+    if (named[variable] !== 1) {
+      assert.strictEqual(positions[variable], -1, 'auxiliaries never enter the heap');
+      continue;
+    }
     if (positions[variable] >= 0) assert.strictEqual(heap[positions[variable]], variable);
     if (solver.assigns[variable] === Value.UNSET) {
       unset += 1;
@@ -247,18 +272,22 @@ export class IncrementalAudit extends Solver {
   private searching = false;
   private backjumpPending = false;
 
-  override solve(assumptions: readonly number[] = []): boolean {
+  // Intercepts the tri-state core driver: solve()'s boolean wrapper and
+  // solveAssuming both dispatch through search(), so this single override
+  // covers every path. solveAssuming never leaves 'unknown' here — these
+  // harnesses run without budgets.
+  override search(assumptions: readonly number[] = []): SearchVerdict {
     assertRoot(this);
     this.calls += 1;
     this.active = assumptions;
     this.searching = true;
     try {
-      const sat = super.solve(assumptions);
-      if (sat) {
+      const verdict = super.search(assumptions);
+      if (verdict === 'sat') {
         assertFixpoint(this);
         for (const lit of assumptions) assert.strictEqual(litValue(lit, this.assigns), Value.TRUE);
       }
-      return sat;
+      return verdict;
     } finally {
       this.searching = false;
       this.active = [];
@@ -445,7 +474,11 @@ export class IncrementalAudit extends Solver {
     });
     assert.strictEqual(
       this.stats.learnedClausesCurrent,
+      // Admissions minus deletions, minus promotions: add() can re-admit a
+      // live learned clause through the permanent path, which flips its
+      // `learned` flag without a new admission or a deletion.
       this.admissions.length -
+        this.admissions.filter((clause) => !clause.learned).length -
         this.reductions.reduce((sum, round) => sum + round.removed.length, 0),
     );
   }

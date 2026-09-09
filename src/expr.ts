@@ -23,11 +23,22 @@ interface OrExpr {
 interface NotExpr {
   not: Variable | BooleanExpr;
 }
+// Cardinality nodes carry a bound `k` and an operand MULTISET: the payload is
+// an ordered array in which repeated operands count repeatedly, so
+// `exactly(1, 'a', 'a')` is UNSAT. See Design § Compiler (Cardinality
+// constraints).
+interface AtMostExpr {
+  atMost: { k: number; exprs: Array<Variable | BooleanExpr> };
+}
+interface AtLeastExpr {
+  atLeast: { k: number; exprs: Array<Variable | BooleanExpr> };
+}
 // A node is a bare string (a variable leaf) or an object carrying exactly one
-// of the operator keys `and`/`or`/`not`. Those keys are mutually exclusive,
-// so `'and' in expr` / `'or' in expr` / `'not' in expr` exhaustively dispatch;
-// compound nodes may nest arbitrarily.
-export type BooleanExpr = AndExpr | OrExpr | NotExpr;
+// of the operator keys `and`/`or`/`not`/`atMost`/`atLeast`. Those keys are
+// mutually exclusive, so `'and' in expr` / `'or' in expr` / `'not' in expr` /
+// `'atMost' in expr` exhaustively dispatch; compound nodes may nest
+// arbitrarily.
+export type BooleanExpr = AndExpr | OrExpr | NotExpr | AtMostExpr | AtLeastExpr;
 
 // All variables or subexpressions must be true.
 export const and = (...exprs: Array<Variable | BooleanExpr>): BooleanExpr => ({ and: exprs });
@@ -45,6 +56,58 @@ export const implies = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): B
 // Either `a` or `b` must be true, but not both.
 export const xor = (a: Variable | BooleanExpr, b: Variable | BooleanExpr): BooleanExpr =>
   or(and(a, not(b)), and(not(a), b));
+
+// Every cardinality bound is a non-negative safe integer; the constructors
+// reject anything else with a descriptive Error. The compiler re-validates
+// `k` and the payload shape, because consumers may hand-build AST nodes.
+const validateCardinalityBound = (constructorName: string, k: number): void => {
+  if (!Number.isSafeInteger(k) || k < 0) {
+    throw new Error(
+      `${constructorName} requires k to be a non-negative safe integer (got ${String(k)})`,
+    );
+  }
+};
+
+/**
+ * At most one of the operands is true. Pure sugar for `atMost(1, ...)` — the
+ * ASTs are identical and compilation dispatches on the node, never the
+ * constructor. Operands form a multiset: repeated operands count repeatedly.
+ */
+export const atMostOne = (...exprs: Array<Variable | BooleanExpr>): BooleanExpr => ({
+  atMost: { k: 1, exprs },
+});
+
+/**
+ * At most `k` of the operands are true. `k` must be a non-negative safe
+ * integer. Operands form a multiset: `atMost(1, 'a', 'a')` forces `a` false
+ * (two occurrences of a true `a` already exceed the bound). Edge cases fold
+ * to constants at compile time — `atMost(k >= n, ...)` is always true and
+ * `atMost(0, ...)` asserts every operand false — and variables folded away
+ * stay in the named universe. Prefer conjunctive placement (a top-level
+ * conjunct of `and(...)`): conjunctive bounds compile to the compact
+ * pairwise/sequential-counter encodings, while a nested occurrence is fully
+ * reified through a totalizer, which is larger.
+ */
+export const atMost = (k: number, ...exprs: Array<Variable | BooleanExpr>): BooleanExpr => {
+  validateCardinalityBound('atMost', k);
+  return { atMost: { k, exprs } };
+};
+
+/**
+ * At least `k` of the operands are true. `k` must be a non-negative safe
+ * integer; the multiset and folding rules of `atMost` apply
+ * (`atLeast(0, ...)` is always true, `atLeast(k > n, ...)` is always false).
+ * Conjunctive occurrences compile as `atMost(n - k, ...)` over negated
+ * operands; prefer conjunctive placement for the same reason as `atMost`.
+ */
+export const atLeast = (k: number, ...exprs: Array<Variable | BooleanExpr>): BooleanExpr => {
+  validateCardinalityBound('atLeast', k);
+  return { atLeast: { k, exprs } };
+};
+
+/** Exactly `k` of the operands are true: `atMost(k, ...)` and `atLeast(k, ...)`. */
+export const exactly = (k: number, ...exprs: Array<Variable | BooleanExpr>): BooleanExpr =>
+  and(atMost(k, ...exprs), atLeast(k, ...exprs));
 
 // Strings are always variable leaves and compound nodes are always objects,
 // so a typeof check alone tells them apart — the AST's whole disambiguation
@@ -92,6 +155,22 @@ export function getVariables(
       variables.add(expr.not);
     } else {
       getVariables(expr.not, variables, visited);
+    }
+  } else if ('atMost' in expr) {
+    for (const subExpr of expr.atMost.exprs) {
+      if (isVariable(subExpr)) {
+        variables.add(subExpr);
+      } else {
+        getVariables(subExpr, variables, visited);
+      }
+    }
+  } else if ('atLeast' in expr) {
+    for (const subExpr of expr.atLeast.exprs) {
+      if (isVariable(subExpr)) {
+        variables.add(subExpr);
+      } else {
+        getVariables(subExpr, variables, visited);
+      }
     }
   }
   return variables;
