@@ -229,6 +229,10 @@ describe('cardinality additions', () => {
 
 describe('failure-atomic staged compilation', () => {
   const invalidExprs: Array<[string, unknown]> = [
+    // A bare variable string is a valid operand but never a top-level
+    // formula; it previously reached getVariables and died on a raw engine
+    // TypeError from the `'and' in expr` probe.
+    ['a bare variable string', 'a'],
     ['multiple operator keys', { and: ['a'], or: ['b'] }],
     ['no operator key', { foo: ['a'] }],
     ['empty node', {}],

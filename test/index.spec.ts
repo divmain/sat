@@ -22,8 +22,20 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import * as publicApi from '../src';
-import { and, getAllSolutions, getSolution, implies, not, or, Value, xor } from '../src';
-import type { Variable, VariablePriority } from '../src';
+import {
+  and,
+  createSolver,
+  getAllSolutions,
+  getAllSolutionsAsync,
+  getSolution,
+  getSolutionAsync,
+  implies,
+  not,
+  or,
+  Value,
+  xor,
+} from '../src';
+import type { BooleanExpr, Variable, VariablePriority } from '../src';
 import {
   assertModelListsEqual,
   assertModelShape,
@@ -614,6 +626,48 @@ describe('getAllSolutions', () => {
         { a: Value.TRUE, b: Value.TRUE },
       ]);
     });
+  });
+});
+
+describe('top-level formula validation', () => {
+  // A bare variable string is a valid OPERAND at any nested position but
+  // never a valid top-level BooleanExpr (the formula type is an operator
+  // object). It previously slipped through compile-time validation and died
+  // on a raw engine TypeError inside variable collection (`'and' in expr`
+  // on a primitive); every entry point must now surface the same style of
+  // descriptive validation Error as any other malformed node.
+  const bare = 'a' as unknown as BooleanExpr;
+  const message =
+    /invalid BooleanExpr at \$: expected an and\/or\/not\/atMost\/atLeast object, got string a/;
+
+  it('rejects a bare variable string at the synchronous entry points', () => {
+    assert.throws(() => getSolution(bare), { name: 'Error', message });
+    assert.throws(() => getAllSolutions(bare), { name: 'Error', message });
+    assert.throws(() => createSolver(bare), { name: 'Error', message });
+  });
+
+  it('rejects a bare variable string at the asynchronous entry points', async () => {
+    // Async entry points validate before the first yield, so the failure
+    // rejects the returned Promise (never a synchronous throw).
+    await assert.rejects(getSolutionAsync(bare), { name: 'Error', message });
+    await assert.rejects(getAllSolutionsAsync(bare), { name: 'Error', message });
+  });
+
+  it('rejects a bare variable string in SatSolver.add without touching the handle', () => {
+    const solver = createSolver(and('x'));
+    assert.throws(() => solver.add(bare), { name: 'Error', message });
+    assert.deepStrictEqual(solver.variables(), ['x'], 'the named universe is unchanged');
+    assert.deepStrictEqual(solver.solve(), { status: 'sat', model: { x: Value.TRUE } });
+  });
+
+  it('keeps bare variable operands valid at every nesting position', () => {
+    const formula = and('a', or('b', not('c')));
+    const model = expectSatModel(getSolution(formula));
+    assertModelShape(model, formula);
+    assert.strictEqual(expressionValue(formula, model), Value.TRUE);
+    // A single nested variable operand still folds to its unit assertion.
+    assert.deepStrictEqual(getSolution(not('z')), { status: 'sat', model: { z: Value.FALSE } });
+    assert.deepStrictEqual(createSolver(and('y')).variables(), ['y']);
   });
 });
 

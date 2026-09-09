@@ -171,8 +171,19 @@ const describeNode = (node: unknown): string => {
 // Identity memoization keeps sharing (xor's duplicated operands) linear; a
 // re-visit on the active path is a cycle, never a finite expression.
 // Operator keys are probed with `in`, matching the dispatch semantics of the
-// traversals this guards.
+// traversals this guards. A bare variable string is a valid OPERAND at any
+// nested position but never a valid top-level formula: BooleanExpr is an
+// operator object, and variable collection dispatches with `'and' in expr`,
+// which a primitive string cannot even be probed by (a raw engine TypeError,
+// not a descriptive validation Error).
 function validateExpression(expr: BooleanExpr): void {
+  if (typeof expr === 'string') {
+    throw new Error(
+      `invalid BooleanExpr at $: expected an and/or/not/atMost/atLeast object, got ${describeNode(
+        expr,
+      )}`,
+    );
+  }
   const visiting = new Set<object>();
   const visited = new Set<unknown>();
   const visit = (node: unknown, path: string): void => {
